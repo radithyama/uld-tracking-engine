@@ -1,6 +1,9 @@
-// Command simulator emulates warehouse scanners: it walks the seeded ULD fleet
-// through Receiving -> Build-up -> Staging -> Ramp and posts scan batches to
-// the ingest API. Occasionally it overloads a ULD to exercise weight alerts.
+// Command simulator emulates the warehouse scanners at every station in the
+// network. It walks the seeded ULD fleet through receiving, build-up,
+// staging and ramp, follows ULDs onto their flights (flown by the processor's
+// network clock) and posts scan batches to the ingest API as an
+// at-least-once client. Occasionally it over-packs a ULD to exercise weight
+// alerts.
 package main
 
 import (
@@ -25,94 +28,6 @@ import (
 	"github.com/radithya/uld-engine/internal/model"
 )
 
-type simULD struct {
-	id       string
-	tare     float64
-	maxGross float64
-	weight   float64
-	target   float64 // planned gross weight for this build-up cycle
-	flight   string
-	stage    int // index into stages
-}
-
-var stages = []struct {
-	zone      string
-	scanner   string
-	scanTypes []model.ScanType
-}{
-	{"RCV", "SCN-RCV", []model.ScanType{model.ScanBarcode}},
-	{"BUP", "SCN-BUP", []model.ScanType{model.ScanRFID, model.ScanBarcode}},
-	{"STA", "SCN-STG", []model.ScanType{model.ScanRFID}},
-	{"STB", "SCN-STG", []model.ScanType{model.ScanRFID}},
-	{"RMP", "SCN-RMP", []model.ScanType{model.ScanRFID}},
-}
-
-// Mirrors backend/migrations/002_seed.sql.
-func seedFleet(r *rand.Rand) []*simULD {
-	var fleet []*simULD
-	for n := 1; n <= 12; n++ {
-		flight := "QZ7510"
-		if n%2 == 0 {
-			flight = "GA716"
-		}
-		fleet = append(fleet, &simULD{id: fmt.Sprintf("AKE%dGA", 10000+n), tare: 82, maxGross: 1588, weight: 82, flight: flight})
-	}
-	for n := 1; n <= 8; n++ {
-		fleet = append(fleet, &simULD{id: fmt.Sprintf("PMC%dGA", 20000+n), tare: 110, maxGross: 6804, weight: 110, flight: "GA880", stage: 1})
-	}
-	for _, u := range fleet {
-		u.target = plannedFill(r, u.maxGross)
-	}
-	return fleet
-}
-
-// step advances one ULD's simulated life and returns the scan it produces.
-func (u *simULD) step(r *rand.Rand) model.ScanEvent {
-	const (
-		rcv, bup, rmp = 0, 1, 4
-	)
-	switch {
-	case u.stage == bup && u.weight < u.target && r.Float64() < 0.7:
-		// Still in build-up: more cargo is loaded until the planned fill.
-		u.weight = min(u.weight+r.Float64()*u.maxGross*0.2, u.target)
-		// ~4% chance a build-up crew over-packs the ULD.
-		if r.Float64() < 0.04 {
-			u.weight = u.maxGross * (1.02 + r.Float64()*0.08)
-		}
-	case u.stage == rmp && r.Float64() < 0.5:
-		// Flight departed: ULD returns empty to receiving with a new plan.
-		u.stage, u.weight, u.target = rcv, u.tare, plannedFill(r, u.maxGross)
-	case u.weight > u.maxGross && u.stage < rmp && r.Float64() < 0.3:
-		// Ops caught the overweight ULD and rebuilt it — only possible before
-		// loading. (A weight change on a LOADED ULD is what ULD-INT-003 flags.)
-		u.weight = u.target
-	case r.Float64() < 0.55:
-		switch u.stage {
-		case bup:
-			u.stage = 2 + r.IntN(2) // Staging A or B
-		case 2, 3:
-			u.stage = rmp
-		case rcv:
-			u.stage = bup
-		}
-	}
-
-	st := stages[u.stage]
-	return model.ScanEvent{
-		ULDID:        u.id,
-		ScannerID:    fmt.Sprintf("%s-%02d", st.scanner, r.IntN(4)+1),
-		ScanType:     st.scanTypes[r.IntN(len(st.scanTypes))],
-		WeightKg:     float64(int(u.weight*10)) / 10,
-		LocationID:   fmt.Sprintf("%s-%02d", st.zone, r.IntN(6)+1),
-		FlightNumber: u.flight,
-		Timestamp:    time.Now().UTC(),
-	}
-}
-
-func plannedFill(r *rand.Rand, maxGross float64) float64 {
-	return maxGross * (0.55 + r.Float64()*0.42)
-}
-
 // stats are read by the control API while the generator/sender goroutines
 // update them.
 type stats struct {
@@ -123,6 +38,7 @@ type stats struct {
 	spooled   atomic.Int64 // accepted while ingest was in degraded (spool) mode
 	inFlight  atomic.Int64
 	paused    atomic.Bool
+	rate      atomic.Int64 // scans per second, adjustable at runtime
 
 	mu   sync.Mutex
 	sent []string // event ids acknowledged with 202, in order (the ledger)
@@ -137,15 +53,16 @@ func main() {
 
 	url := config.String("INGEST_URL", "http://localhost:8080") + "/v1/scans"
 	apiKey := config.String("SIM_API_KEY", "")
-	rate := max(config.Int("SIM_RATE", 30), 1) // events per second
 	const tick = 250 * time.Millisecond
-	perTick := max(rate*int(tick)/int(time.Second), 1)
 	runID := uuid.NewString()[:8]
+	snapshotURL := config.String("REALTIME_URL", "http://localhost:8081") + "/api/snapshot"
 
 	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 42))
 	fleet := seedFleet(rng)
 	client := &http.Client{Timeout: 10 * time.Second}
 	st := &stats{}
+	st.rate.Store(int64(min(max(config.Int("SIM_RATE", 30), 1), maxRate)))
+	w := &world{}
 
 	// Generator -> queue -> single sender preserves scan order end to end.
 	// The queue models a scanner's local buffer: generation continues while
@@ -153,42 +70,59 @@ func main() {
 	queue := make(chan []model.ScanEvent, config.Int("SIM_BUFFER_BATCHES", 200_000))
 
 	var wg sync.WaitGroup
-	wg.Add(3)
-	go func() { defer wg.Done(); generate(ctx, log, st, queue, fleet, rng, tick, perTick) }()
+	wg.Add(4)
+	go func() { defer wg.Done(); w.sync(ctx, log, snapshotURL, 2*time.Second) }()
+	go func() { defer wg.Done(); generate(ctx, log, st, queue, fleet, w, rng, tick) }()
 	go func() { defer wg.Done(); send(ctx, log, st, client, url, apiKey, queue) }()
 	go func() {
 		defer wg.Done()
-		srv := &http.Server{Addr: config.String("SIM_CONTROL_ADDR", ":8090"), Handler: controlAPI(st, queue, runID, rate),
+		srv := &http.Server{Addr: config.String("SIM_CONTROL_ADDR", ":8090"), Handler: controlAPI(st, queue, runID),
 			ReadHeaderTimeout: 5 * time.Second}
 		if err := httpx.Serve(ctx, log, srv); err != nil {
 			log.Error("control api", "err", err)
 		}
 	}()
 
-	log.Info("simulator started", "url", url, "rate_per_sec", rate, "run_id", runID, "authenticated", apiKey != "")
+	log.Info("simulator started", "url", url, "rate_per_sec", st.rate.Load(), "run_id", runID,
+		"authenticated", apiKey != "", "snapshot", snapshotURL)
 	wg.Wait()
 	log.Info("simulator stopped", "generated", st.generated.Load(), "accepted", st.accepted.Load(),
 		"unsent", len(queue)+int(st.inFlight.Load()))
 }
 
+const maxRate = 200
+
 func generate(ctx context.Context, log *slog.Logger, st *stats, queue chan<- []model.ScanEvent,
-	fleet []*simULD, rng *rand.Rand, tick time.Duration, perTick int) {
+	fleet []*simULD, w *world, rng *rand.Rand, tick time.Duration) {
 	t := time.NewTicker(tick)
 	defer t.Stop()
+	carry := 0.0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		if st.paused.Load() {
+		if st.paused.Load() || !w.ready() {
 			continue
 		}
-		batch := make([]model.ScanEvent, 0, perTick)
-		for range perTick {
-			ev := fleet[rng.IntN(len(fleet))].step(rng)
+		// Fractional carry keeps low rates (e.g. 5/s at 4 ticks/s) accurate.
+		carry += float64(st.rate.Load()) * tick.Seconds()
+		n := int(carry)
+		carry -= float64(n)
+		batch := make([]model.ScanEvent, 0, n)
+		for attempts := 0; len(batch) < n && attempts < n*5; attempts++ {
+			u := fleet[rng.IntN(len(fleet))]
+			s, known := w.get(u.id)
+			if !u.reconcile(s, known, rng) {
+				continue
+			}
+			ev := u.step(rng)
 			ev.EventID = uuid.NewString() // client-assigned: retries are idempotent
 			batch = append(batch, ev)
+		}
+		if len(batch) == 0 {
+			continue
 		}
 		select {
 		case queue <- batch:
@@ -290,7 +224,8 @@ func post(ctx context.Context, c *http.Client, url, apiKey string, batch []model
 //	GET  /sent    newline-separated event ids acknowledged by ingest (the ledger)
 //	POST /pause   stop generating new scans (queue keeps draining)
 //	POST /resume
-func controlAPI(st *stats, queue chan []model.ScanEvent, runID string, rate int) http.Handler {
+//	POST /rate    {"rate": n}  set scans per second (1-200)
+func controlAPI(st *stats, queue chan []model.ScanEvent, runID string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -298,6 +233,7 @@ func controlAPI(st *stats, queue chan []model.ScanEvent, runID string, rate int)
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, _ *http.Request) {
 		// len(queue) counts batches; approximate scans from the configured rate.
 		queuedBatches := len(queue)
+		rate := int(st.rate.Load())
 		queuedScans := queuedBatches*max(rate/4, 1) + int(st.inFlight.Load())
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"run_id":         runID,
@@ -329,6 +265,17 @@ func controlAPI(st *stats, queue chan []model.ScanEvent, runID string, rate int)
 	mux.HandleFunc("POST /resume", func(w http.ResponseWriter, _ *http.Request) {
 		st.paused.Store(false)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"paused": false})
+	})
+	mux.HandleFunc("POST /rate", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Rate int `json:"rate"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil || req.Rate < 1 || req.Rate > maxRate {
+			httpx.WriteError(w, http.StatusBadRequest, fmt.Sprintf("rate must be 1-%d", maxRate), nil)
+			return
+		}
+		st.rate.Store(int64(req.Rate))
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"rate_per_sec": req.Rate})
 	})
 	return mux
 }

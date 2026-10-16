@@ -85,6 +85,7 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
           <option value="IN_TRANSIT">In Transit</option>
           <option value="STAGED">Staged</option>
           <option value="LOADED">Loaded</option>
+          <option value="IN_FLIGHT">In Flight</option>
         </select>
         <select className={input} value={flight} onChange={(e) => setFlight(e.target.value)}>
           <option value="">All flights</option>
@@ -144,7 +145,15 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
                   <td className="px-3 py-2">
                     <StatusBadge status={u.status} />
                   </td>
-                  <td className="px-3 py-2 font-mono text-slate-400">{u.location_id || "—"}</td>
+                  <td className="px-3 py-2 font-mono text-slate-400">
+                    {u.status === "IN_FLIGHT" ? (
+                      <span className="text-violet-300" title={u.eta ? `ETA ${new Date(u.eta).toLocaleTimeString("en-GB")}` : ""}>
+                        ✈ {u.origin}→{u.destination}
+                      </span>
+                    ) : (
+                      u.location_id || "—"
+                    )}
+                  </td>
                   {/* key on version replays the flash when the value changes */}
                   <td
                     key={u.version}

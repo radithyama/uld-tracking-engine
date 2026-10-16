@@ -53,6 +53,10 @@ func main() {
 	defer cache.Close()
 
 	p := &Processor{log: log, pg: pg, cache: cache, detect: det}
+
+	// Security events also feed the dashboard's live security stream.
+	secPub := store.NewSecurityPublisher(cache, log)
+	secevent.SetSink("processor", secPub.Submit)
 	p.dlq = kafkax.NewWriter(cfg.KafkaBrokers, cfg.KafkaDLQTopic)
 	p.dlq.ErrorLogger = kafka.LoggerFunc(logx.Sampled(log, slog.LevelWarn, "kafka-dlq-writer", 5*time.Second))
 	defer p.dlq.Close()
@@ -81,10 +85,16 @@ func main() {
 		}()
 	}
 
-	wg.Add(2)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		p.reportStats(ctx, 15*time.Second)
+	}()
+	go func() { defer wg.Done(); secPub.Run(ctx) }()
+	go func() {
+		defer wg.Done()
+		p.runNetworkClock(ctx, config.Duration("NETWORK_TICK", 5*time.Second),
+			configFloat("NETWORK_TIME_SCALE", 10), config.Duration("SANDBOX_ULD_TTL", 15*time.Minute))
 	}()
 	go func() {
 		defer wg.Done()

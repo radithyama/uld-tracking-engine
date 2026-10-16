@@ -16,6 +16,11 @@ export const statusStyle: Record<ULDStatus, { label: string; chip: string; dot: 
     chip: "bg-emerald-500/10 text-emerald-300 ring-emerald-400/30",
     dot: "bg-emerald-400",
   },
+  IN_FLIGHT: {
+    label: "In Flight",
+    chip: "bg-violet-500/10 text-violet-300 ring-violet-400/30",
+    dot: "bg-violet-400",
+  },
 };
 
 export function StatusBadge({ status }: { status: ULDStatus }) {

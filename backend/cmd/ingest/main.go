@@ -24,6 +24,7 @@ import (
 	"github.com/radithya/uld-engine/internal/model"
 	"github.com/radithya/uld-engine/internal/secevent"
 	"github.com/radithya/uld-engine/internal/spool"
+	"github.com/radithya/uld-engine/internal/store"
 )
 
 const (
@@ -87,6 +88,15 @@ func main() {
 	go func() { defer close(replayDone); pub.RunReplayer(ctx) }()
 
 	s := &server{log: log, pub: pub}
+
+	// Security events also feed the dashboard's live security stream. Redis
+	// is optional here: if it's down, events are dropped from the stream but
+	// still logged to stdout for the SIEM.
+	rdb := store.NewRedisLazy(cfg.RedisAddr)
+	defer rdb.Close()
+	secPub := store.NewSecurityPublisher(rdb, log)
+	secevent.SetSink("ingest", secPub.Submit)
+	go secPub.Run(ctx)
 
 	r := chi.NewRouter()
 	// No middleware.RealIP: X-Forwarded-For is client-controlled (see httpx.ClientIP).

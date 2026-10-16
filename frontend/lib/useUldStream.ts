@@ -1,22 +1,21 @@
 "use client";
 
 import { useEffect, useReducer } from "react";
-import type {
-  ConnectionStatus,
-  FlightLoad,
-  ServerMessage,
-  ULD,
-  WarehouseLocation,
-} from "./types";
+import type { ConnectionStatus, FlightLoad, ServerMessage, Station, ULD, WarehouseLocation } from "./types";
 
 export interface StreamState {
   ulds: Record<string, ULD>;
-  flights: Record<string, FlightLoad>;
+  /** Keyed by flight id: one flight number has many rotations. */
+  flights: Record<number, FlightLoad>;
   locations: WarehouseLocation[];
+  stations: Station[];
+  timeScale: number;
   status: ConnectionStatus;
   /** Total messages applied since page load (for the throughput meter). */
   messageCount: number;
   lastMessageAt: number | null;
+  /** Bumped when a flight's load plan changes, so open deck views refetch. */
+  planVersions: Record<number, number>;
 }
 
 type Action =
@@ -27,19 +26,18 @@ const initialState: StreamState = {
   ulds: {},
   flights: {},
   locations: [],
+  stations: [],
+  timeScale: 1,
   status: "connecting",
   messageCount: 0,
   lastMessageAt: null,
+  planVersions: {},
 };
 
 // Every server message carries complete state plus a monotonic version, so
 // merging is "highest version wins". This makes duplicate or reordered
 // delivery (e.g. an update that races the initial snapshot) harmless.
-function upsert<T extends { version: number }>(
-  into: Record<string, T>,
-  key: string,
-  next: T,
-) {
+function upsert<K extends string | number, T extends { version: number }>(into: Record<K, T>, key: K, next: T) {
   const cur = into[key];
   if (!cur || next.version >= cur.version) into[key] = next;
 }
@@ -52,19 +50,30 @@ function reducer(state: StreamState, action: Action): StreamState {
     case "messages": {
       const ulds = { ...state.ulds };
       const flights = { ...state.flights };
-      let locations = state.locations;
+      let { locations, stations, timeScale, planVersions } = state;
       for (const msg of action.msgs) {
         switch (msg.type) {
           case "snapshot":
             locations = msg.data.locations ?? locations;
+            stations = msg.data.stations ?? stations;
+            timeScale = msg.data.time_scale || timeScale;
             for (const u of msg.data.ulds ?? []) upsert(ulds, u.id, u);
-            for (const f of msg.data.flights ?? []) upsert(flights, f.flight_number, f);
+            for (const f of msg.data.flights ?? []) upsert(flights, f.id, f);
             break;
           case "uld_update":
             upsert(ulds, msg.data.id, msg.data);
             break;
+          case "uld_removed":
+            delete ulds[msg.data.id];
+            break;
           case "flight_update":
-            upsert(flights, msg.data.flight_number, msg.data);
+            upsert(flights, msg.data.id, msg.data);
+            break;
+          case "flight_removed":
+            delete flights[msg.data.id];
+            break;
+          case "loadplan_update":
+            planVersions = { ...planVersions, [msg.data.flight_id]: (planVersions[msg.data.flight_id] ?? 0) + 1 };
             break;
         }
       }
@@ -73,6 +82,9 @@ function reducer(state: StreamState, action: Action): StreamState {
         ulds,
         flights,
         locations,
+        stations,
+        timeScale,
+        planVersions,
         messageCount: state.messageCount + action.msgs.length,
         lastMessageAt: action.at,
       };

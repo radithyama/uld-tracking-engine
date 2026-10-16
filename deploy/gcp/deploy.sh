@@ -29,6 +29,35 @@ fi
 
 echo "== deploying $(git rev-parse --short HEAD): $(git log -1 --format=%s)"
 
+# --- Secrets & runtime config ----------------------------------------------
+# Generated once per VM and kept outside the repo. INTERNAL_API_SECRET is
+# shared by the realtime service (verifies role tokens) and the dashboard
+# server (mints them); AUTH_SECRET signs Auth.js sessions.
+install -d -m 0755 /etc/uld
+SECRETS=/etc/uld/secrets.env
+if [ ! -f "$SECRETS" ]; then
+  umask 077
+  printf 'INTERNAL_API_SECRET=%s\nAUTH_SECRET=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > "$SECRETS"
+  umask 022
+fi
+# shellcheck disable=SC1090
+. "$SECRETS"
+
+# set_kv FILE KEY VALUE: add KEY only if missing, so values an operator adds
+# or edits by hand (e.g. AUTH_GOOGLE_ID) survive deploys.
+set_kv() { touch "$1"; grep -q "^$2=" "$1" || printf '%s=%s\n' "$2" "$3" >> "$1"; }
+set_kv .env INTERNAL_API_SECRET "$INTERNAL_API_SECRET"
+
+DASH_ENV=/etc/uld/dashboard.env
+set_kv "$DASH_ENV" AUTH_SECRET "$AUTH_SECRET"
+set_kv "$DASH_ENV" AUTH_TRUST_HOST true
+set_kv "$DASH_ENV" INTERNAL_API_SECRET "$INTERNAL_API_SECRET"
+set_kv "$DASH_ENV" REALTIME_INTERNAL_URL http://127.0.0.1:8081
+set_kv "$DASH_ENV" INGEST_INTERNAL_URL http://127.0.0.1:8080
+set_kv "$DASH_ENV" SIM_CONTROL_URL http://127.0.0.1:8090
+set_kv "$DASH_ENV" SANDBOX_API_KEY dev-web-sandbox-key-5c2e81f0a9
+chmod 0640 "$DASH_ENV"
+
 # Heartbeat: steps like `go build` are silent for minutes; regular output keeps
 # an SSH session (the CI deploy runs over an IAP tunnel) from idling out.
 ( while sleep 30; do echo "   ... $(date +%T) still working"; done ) &
@@ -38,7 +67,7 @@ trap 'kill $HEARTBEAT 2>/dev/null || true' EXIT
 # --- Backend --------------------------------------------------------------
 # Build before stopping anything, so a broken build leaves the old stack up.
 # One image at a time: parallel Go builds exhaust memory on small VMs.
-for svc in ingest processor realtime simulator; do
+for svc in migrate ingest processor realtime simulator; do
   echo "== building $svc"
   BUILDKIT_PROGRESS=plain docker compose --profile sim build "$svc"
 done
@@ -73,6 +102,7 @@ echo "backend healthy"
 id uld >/dev/null 2>&1 ||
   useradd --system --create-home --home-dir /var/lib/uld --shell /usr/sbin/nologin uld
 chown -R uld:uld frontend
+chgrp uld "$DASH_ENV"
 
 # Rebuild when the frontend source (git tree hash) or the WebSocket URL changed.
 STAMP="$WS_URL $(git rev-parse HEAD:frontend)"
@@ -98,6 +128,7 @@ After=network-online.target docker.service
 User=uld
 WorkingDirectory=$PWD/frontend
 Environment=NODE_ENV=production HOME=/var/lib/uld
+EnvironmentFile=/etc/uld/dashboard.env
 ExecStart=/usr/bin/npm start -- -p 3000
 Restart=always
 RestartSec=5

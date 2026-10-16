@@ -25,7 +25,7 @@ Compose v2, plus `curl`, `jq` and `column` (`sudo apt install jq bsdextrautils`)
 
 | Service | Check | Healthy when |
 |---|---|---|
-| postgres | `pg_isready` + `SELECT 1 FROM airports` | the init migrations have finished, not just when the port is open |
+| postgres | `pg_isready` | accepts connections (schema is then applied by the one-shot `migrate` service, which processor and realtime wait for) |
 | redis | `redis-cli ping` | it replies `PONG` |
 | kafka | `kafka-broker-api-versions.sh` | the broker answers API requests |
 | ingest / processor / realtime / simulator | `/app healthcheck http://127.0.0.1:<port>/healthz` | the process serves HTTP |
@@ -41,7 +41,7 @@ dashboards connect. The simulator waits for a healthy ingest.
 ### Command sheet
 
 ```bash
-# 1. Clean start. -v wipes Postgres and the spool so migrations 001-003 re-run.
+# 1. Clean start. -v wipes Postgres and the spool; `migrate` re-applies every migration.
 docker compose --profile sim --profile tools down -v
 docker compose up -d --build --wait          # blocks until every healthcheck passes
 
@@ -319,3 +319,103 @@ sequence with maxspan=30m
 # Integrity anomaly during a pipeline outage (cover for tampering?)
 event.dataset:"uld.security" and rule.id:(ULD-INT-* or ULD-AVAIL-001)
 ```
+
+---
+
+## V2 operations
+
+### Schema migrations
+
+The `migrate` one-shot compose service applies `backend/migrations/*.sql`,
+which are embedded in its binary, and records each version in
+`schema_migrations`. `processor` and `realtime` start only after it exits
+successfully.
+
+* **Upgrading a v1 database:** v1 applied 001–003 through Postgres initdb
+  scripts, which keep no record. On its first run, `migrate` detects their
+  objects, marks them `baselined`, then applies 004 and later. Running it
+  again is a no-op.
+* **Adding a migration:** add `005_*.sql`, written to be idempotent
+  (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`), then deploy.
+
+```bash
+docker compose run --rm migrate                       # apply pending (also runs on every `up`)
+docker compose exec -T postgres psql -U uld -d uld -c 'TABLE schema_migrations'
+```
+
+### Secrets and dashboard configuration (VM)
+
+On its first run, `deploy/gcp/deploy.sh` generates `/etc/uld/secrets.env`
+(mode 600) containing:
+
+* `INTERNAL_API_SECRET`: shared by realtime, which verifies role tokens, and
+  the dashboard server, which mints them;
+* `AUTH_SECRET`: signs Auth.js sessions.
+
+It writes `INTERNAL_API_SECRET` into the repo's `.env` for Compose. It also
+creates `/etc/uld/dashboard.env`, which the `uld-dashboard` systemd unit
+loads. Keys are only ever *added*, so hand edits survive deploys.
+
+**Enable Google sign-in:**
+
+1. Create an OAuth client (type Web application) with the redirect URI
+   `https://<domain>/auth/callback/google`.
+2. Add the client to the dashboard config:
+
+   ```bash
+   sudo tee -a /etc/uld/dashboard.env <<'ENV'
+   AUTH_GOOGLE_ID=…apps.googleusercontent.com
+   AUTH_GOOGLE_SECRET=…
+   GOOGLE_ROLE_MAP=you@example.com:security_auditor
+   GOOGLE_DEFAULT_ROLE=ground_handler
+   ENV
+   sudo systemctl restart uld-dashboard
+   ```
+
+**Turn off the one-click demo accounts:** add `DEMO_LOGIN=off`.
+
+### Network clock
+
+The processor flies each aircraft's outbound and return rotation. Real block
+and turnaround times (the `routes` table) are divided by
+`NETWORK_TIME_SCALE`. The default is 10, so CGK→SYD takes 42 minutes.
+
+* **Departure:** `LOADED` ULDs become `IN_FLIGHT`. Booked ULDs that aren't
+  loaded are rebooked onto the next rotation.
+* **Arrival:** ULDs land in the destination's receiving area.
+* **Sandbox ULDs** (`…SB`) are purged after `SANDBOX_ULD_TTL` (15 minutes).
+
+Only one processor runs the clock at a time, elected per tick by a Postgres
+advisory lock.
+
+### Role-gated API (realtime, internal)
+
+The Next.js server calls these with an HS256 token: audience `uld-realtime`,
+2-minute TTL, carrying `sub`, `name` and `role`. Go re-checks the role.
+Nginx does not expose them.
+
+| Endpoint | Roles |
+|---|---|
+| `GET /api/v1/flights/{id}/loadplan` | loadmaster, security_auditor |
+| `POST /api/v1/flights/{id}/optimize` `{apply}` | loadmaster |
+| `POST /api/v1/flights/{id}/loadplan/move` `{uld_id, position}` | loadmaster |
+| `GET /api/v1/security/alerts`, `POST …/{id}/ack\|resolve` | security_auditor |
+| `GET /api/v1/audit` | security_auditor |
+| `GET /ws/security?token=` | security_auditor |
+
+The browser reaches these only through `/bff/*` routes. Those check the
+Auth.js session first and rate-limit sandbox actions to 20 per user per
+minute.
+
+### Verifying V2 after a deploy
+
+```bash
+curl -s localhost:8081/api/snapshot | jq '.data | {stations: (.stations|length), locations: (.locations|length), time_scale}'
+docker compose logs --no-log-prefix processor | jq -c 'select(.message=="network clock")' | tail
+docker compose exec -T postgres psql -U uld -d uld -c \
+  "SELECT flight_number, status, scheduled_departure, estimated_arrival FROM flights WHERE status <> 'ARRIVED' ORDER BY 3"
+```
+
+Then sign in as each demo role. In the sandbox, fire *Trigger impossible
+travel*; within about a second it appears for the Security Auditor as a
+ULD-GEO-001 alert.

@@ -18,7 +18,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -100,16 +103,46 @@ var (
 
 var counts sync.Map // rule ID -> *atomic.Int64
 
+// Record is the structured copy of an event handed to the sink (the live
+// security stream). Details mirrors the event-specific log fields.
+type Record struct {
+	ID       string         `json:"id"`
+	Time     time.Time      `json:"@timestamp"`
+	Service  string         `json:"service"`
+	RuleID   string         `json:"rule_id"`
+	RuleName string         `json:"rule_name"`
+	Action   string         `json:"action"`
+	Kind     string         `json:"kind"`
+	Severity int            `json:"severity"`
+	Outcome  string         `json:"outcome"`
+	Reason   string         `json:"reason"`
+	Details  map[string]any `json:"details"`
+}
+
+type sinkFn struct {
+	service string
+	fn      func(Record)
+}
+
+var sink atomic.Pointer[sinkFn]
+
+// SetSink registers a callback that receives every event with severity > 0
+// (auth successes are excluded: they're high-volume and not actionable). fn
+// must not block; Emit calls it synchronously.
+func SetSink(service string, fn func(Record)) { sink.Store(&sinkFn{service: service, fn: fn}) }
+
 // Emit writes one security event. outcome is the ECS event.outcome
 // ("success", "failure" or "unknown"); reason is a short machine-friendly
 // explanation (event.reason).
 func Emit(ctx context.Context, log *slog.Logger, r Rule, outcome, reason string, attrs ...slog.Attr) {
 	c, _ := counts.LoadOrStore(r.ID, new(atomic.Int64))
 	c.(*atomic.Int64).Add(1)
+	id := uuid.NewString()
 
 	all := make([]slog.Attr, 0, len(attrs)+2)
 	all = append(all,
 		slog.Group("event",
+			slog.String("id", id),
 			slog.String("kind", r.Kind),
 			slog.Any("category", r.Category),
 			slog.Any("type", r.Type),
@@ -124,6 +157,32 @@ func Emit(ctx context.Context, log *slog.Logger, r Rule, outcome, reason string,
 	)
 	all = append(all, attrs...)
 	log.LogAttrs(ctx, r.Level, r.Name, all...)
+
+	if s := sink.Load(); s != nil && r.Severity > 0 {
+		s.fn(Record{
+			ID: id, Time: time.Now().UTC(), Service: s.service, RuleID: r.ID, RuleName: r.Name,
+			Action: r.Action, Kind: r.Kind, Severity: r.Severity, Outcome: outcome, Reason: reason,
+			Details: attrsToMap(attrs),
+		})
+	}
+}
+
+// attrsToMap converts slog attributes (including nested groups) into plain
+// maps for JSON encoding.
+func attrsToMap(attrs []slog.Attr) map[string]any {
+	m := make(map[string]any, len(attrs))
+	for _, a := range attrs {
+		v := a.Value.Resolve()
+		switch v.Kind() {
+		case slog.KindGroup:
+			m[a.Key] = attrsToMap(v.Group())
+		case slog.KindTime:
+			m[a.Key] = v.Time().UTC().Format(time.RFC3339Nano)
+		default:
+			m[a.Key] = v.Any()
+		}
+	}
+	return m
 }
 
 // Counts returns how many events of each rule have been emitted by this

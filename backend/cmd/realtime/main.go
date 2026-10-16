@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,11 +19,13 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/radithya/uld-engine/internal/authz"
 	"github.com/radithya/uld-engine/internal/config"
 	"github.com/radithya/uld-engine/internal/httpx"
 	"github.com/radithya/uld-engine/internal/logx"
 	"github.com/radithya/uld-engine/internal/model"
 	"github.com/radithya/uld-engine/internal/realtime"
+	"github.com/radithya/uld-engine/internal/secevent"
 	"github.com/radithya/uld-engine/internal/store"
 )
 
@@ -29,6 +33,8 @@ type snapshotData struct {
 	ULDs      []json.RawMessage `json:"ulds"`
 	Flights   []json.RawMessage `json:"flights"`
 	Locations []model.Location  `json:"locations"`
+	Stations  []model.Station   `json:"stations"`
+	TimeScale float64           `json:"time_scale"` // network clock acceleration
 }
 
 func main() {
@@ -55,14 +61,25 @@ func main() {
 	}
 	defer cache.Close()
 
-	// Warehouse layout is static reference data: load once.
-	locations, err := pg.Locations(startCtx, config.String("DASHBOARD_STATION", "CGK"))
+	// Network layout is static reference data: load once.
+	locations, err := pg.Locations(startCtx)
+	if err != nil {
+		cancel()
+		logx.Fatal(log, "load locations", err)
+	}
+	stations, err := pg.Stations(startCtx)
 	cancel()
 	if err != nil {
-		logx.Fatal(log, "load locations", err)
+		logx.Fatal(log, "load stations", err)
+	}
+	timeScale, _ := strconv.ParseFloat(config.String("NETWORK_TIME_SCALE", "10"), 64)
+	secret := []byte(config.String("INTERNAL_API_SECRET", ""))
+	if len(secret) == 0 {
+		log.Warn("INTERNAL_API_SECRET not set: role-gated APIs and /ws/security are disabled")
 	}
 
 	hub := realtime.NewHub(log)
+	secHub := realtime.NewHub(log)
 
 	snapshot := func(ctx context.Context) ([]byte, error) {
 		ulds, flights, err := cache.Snapshot(ctx)
@@ -70,14 +87,36 @@ func main() {
 			return nil, err
 		}
 		return json.Marshal(model.Envelope{Type: model.MsgSnapshot, Data: snapshotData{
-			ULDs: ulds, Flights: flights, Locations: locations,
+			ULDs: ulds, Flights: flights, Locations: locations, Stations: stations, TimeScale: timeScale,
 		}})
 	}
+	securitySnapshot := func(ctx context.Context) ([]byte, error) {
+		alerts, err := pg.ListSecurityAlerts(ctx, "", 150)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(model.Envelope{Type: model.MsgSnapshot, Data: map[string]any{"alerts": alerts}})
+	}
 
+	host, _ := os.Hostname()
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(5)
 	go func() { defer wg.Done(); hub.Run(ctx) }()
-	go func() { defer wg.Done(); relay(ctx, log, cache.Client(), hub) }()
+	go func() { defer wg.Done(); secHub.Run(ctx) }()
+	go func() { defer wg.Done(); relay(ctx, log, cache.Client(), store.ChannelEvents, hub) }()
+	go func() { defer wg.Done(); relay(ctx, log, cache.Client(), store.SecurityChannel, secHub) }()
+	go func() {
+		defer wg.Done()
+		// Persist security events from the stream (exactly one realtime
+		// instance handles each), then fan out to every instance.
+		cache.ConsumeSecurity(ctx, "realtime-"+host, log, func(rec secevent.Record) error {
+			alert, inserted, err := pg.InsertSecurityAlert(ctx, rec)
+			if err != nil || !inserted {
+				return err
+			}
+			return cache.PublishSecurity(ctx, model.MsgSecurityEvent, alert)
+		})
+	}()
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, httpx.Logger(log), httpx.Recoverer(log))
@@ -93,20 +132,21 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(b)
 	})
-	r.Handle("/ws", &realtime.Handler{
-		Hub:      hub,
-		Log:      log,
-		Snapshot: snapshot,
-		Upgrader: websocket.Upgrader{
-			ReadBufferSize:    1024,
-			WriteBufferSize:   4096,
-			EnableCompression: true,
-			CheckOrigin: func(r *http.Request) bool {
-				o := r.Header.Get("Origin")
-				return o == "" || httpx.OriginAllowed(origins, o)
-			},
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:    1024,
+		WriteBufferSize:   4096,
+		EnableCompression: true,
+		CheckOrigin: func(r *http.Request) bool {
+			o := r.Header.Get("Origin")
+			return o == "" || httpx.OriginAllowed(origins, o)
 		},
-	})
+	}
+	// Live operations feed: public (equivalent to a departures board).
+	r.Handle("/ws", &realtime.Handler{Hub: hub, Log: log, Snapshot: snapshot, Upgrader: upgrader})
+	// Security event stream: security auditors only (?token= minted by the BFF).
+	r.With(authz.Require(secret, authz.RoleSecurityAuditor)).Handle("/ws/security",
+		&realtime.Handler{Hub: secHub, Log: log, Snapshot: securitySnapshot, Upgrader: upgrader})
+	r.Mount("/api/v1", (&api{log: log, pg: pg, cache: cache}).routes(secret))
 
 	// No WriteTimeout: WebSocket connections are long-lived and manage their
 	// own deadlines.
@@ -127,12 +167,12 @@ func main() {
 // transparently reconnects and resubscribes; while disconnected, clients may
 // miss updates, which is why each update carries complete state rather than a
 // delta, and why clients resync from a snapshot on reconnect.
-func relay(ctx context.Context, log *slog.Logger, rdb *redis.Client, hub *realtime.Hub) {
-	sub := rdb.Subscribe(ctx, store.ChannelEvents)
+func relay(ctx context.Context, log *slog.Logger, rdb *redis.Client, channel string, hub *realtime.Hub) {
+	sub := rdb.Subscribe(ctx, channel)
 	defer sub.Close()
 
 	ch := sub.Channel(redis.WithChannelSize(1024))
-	log.Info("subscribed to redis channel", "channel", store.ChannelEvents)
+	log.Info("subscribed to redis channel", "channel", channel)
 	for {
 		select {
 		case <-ctx.Done():

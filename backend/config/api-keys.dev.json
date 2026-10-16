@@ -33,6 +33,14 @@
       ],
       "sha256": "751a5fe7e03bc7895bee433ff55703af2f9f7d19f918111befd073d4085bcdc7",
       "revoked": true
+    },
+    {
+      "id": "k-web-sandbox",
+      "principal": "web-sandbox",
+      "scopes": [
+        "scans:write"
+      ],
+      "sha256": "4d3030992d4a21854dfdc5e86d4c7f77cb57148cacc8fb9bef077f74f91d7201"
     }
   ]
 }

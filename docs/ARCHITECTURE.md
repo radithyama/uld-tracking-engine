@@ -198,3 +198,36 @@ long-lived connections, not Vercel functions.
 * Expose Prometheus metrics (consumer lag, DLQ rate, hub clients) alongside
   the JSON `/metrics` endpoints.
 * Run Kafka with replication factor 3 and `min.insync.replicas=2`.
+
+## V2 additions
+
+* **Load planning:** `internal/loadopt` is a pure, deterministic optimizer.
+  It does a heavy-first greedy placement, then a steepest-descent local search
+  over moves and swaps. It minimises |CG − target| in %MAC plus lateral
+  imbalance, while respecting contour/type, per-position limits and locked
+  (already loaded) ULDs. Aircraft balance data lives in `aircrafts`, and
+  positions with their arms in `aircraft_positions`. Both are illustrative
+  figures.
+* **Flight lifecycle:** `routes` define outbound and return pairs per
+  aircraft. `store.NetworkTick` departs, lands and reschedules flights in one
+  transaction, guarded by an advisory lock. Bookings always resolve to the
+  next `SCHEDULED` instance of a flight number.
+* **Live projection:** flights are keyed by id, because one number has many
+  rotations. `uld_removed`, `flight_removed` and `loadplan_update` messages
+  keep clients in sync.
+* **Security stream:** `secevent` gives every event an ECS `event.id` and
+  forwards severity > 0 events to a non-blocking sink. That sink does an XADD
+  to a capped Redis Stream. Realtime consumes it as a consumer group (acking
+  after the insert), persists to `security_alerts` (deduplicated on id), and
+  publishes to `uld:security` for every instance's `/ws/security` hub.
+* **AuthN/Z:**
+  * Auth.js (demo credentials and optional Google) runs in Next.js, at
+    `/auth`, because Nginx routes `/api/*` to ingest.
+  * `/bff/*` route handlers check capabilities from `lib/roles.ts`, then call
+    Go with a short-lived HS256 token.
+  * `internal/authz` verifies the algorithm, signature, audience, expiry and
+    role, and rejects `alg: none`.
+* **Simulator:** the simulator is network-aware. It mirrors the server's
+  state from `/api/snapshot`, never scans airborne or loaded ULDs, and runs
+  outstation scanners. As a result, normal traffic raises no false
+  impossible-travel or tamper alerts.

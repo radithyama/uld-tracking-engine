@@ -243,6 +243,10 @@ func (p *Processor) warmCache(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Full rebuild: v1 keyed flights by number, v2 by id.
+	if err := p.cache.ResetFlights(ctx); err != nil {
+		return err
+	}
 	for _, f := range loads {
 		if err := p.cache.PutFlight(ctx, f); err != nil {
 			return err

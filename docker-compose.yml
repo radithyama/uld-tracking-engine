@@ -38,11 +38,10 @@ services:
     ports: ["127.0.0.1:5432:5432"]   # loopback only: never expose the DB
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Executed once, in lexical order, on first boot of an empty volume.
-      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+    # Schema is managed by the `migrate` service (tracked in schema_migrations),
+    # so new migrations also reach databases created by earlier versions.
     healthcheck:
-      # Healthy only once init scripts have run and the DB accepts queries.
-      test: ["CMD-SHELL", "pg_isready -U uld -d uld && psql -U uld -d uld -tAc 'SELECT 1 FROM airports LIMIT 1' | grep -q 1"]
+      test: ["CMD-SHELL", "pg_isready -U uld -d uld"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -105,6 +104,17 @@ services:
           --topic uld.telemetry.dlq --partitions 1 --replication-factor 1
         echo "topics ready"
 
+  # One-shot job: apply pending SQL migrations (backend/migrations, embedded in
+  # the binary). Databases created by v1 are baselined automatically.
+  migrate:
+    build: { context: ./backend, args: { SERVICE: migrate } }
+    logging: *logging
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://uld:uld@postgres:5432/uld?sslmode=disable
+    depends_on:
+      postgres: { condition: service_healthy }
+
   # ------------------------------------------------------------- services
   # Go images are distroless (no shell/curl): each binary implements
   # `<binary> healthcheck <url>` for Docker health probes.
@@ -147,6 +157,9 @@ services:
       METRICS_ADDR: :9090
       DETECT_MAX_SPEED_KMH: "1000"
       DETECT_WEIGHT_SUSPICIOUS_MARGIN: "0.25"
+      # Network clock: flights fly NETWORK_TIME_SCALE x faster than real time.
+      NETWORK_TIME_SCALE: "10"
+      SANDBOX_ULD_TTL: 15m
     ports: ["127.0.0.1:9090:9090"]   # metrics: internal
     healthcheck:
       test: ["CMD", "/app", "healthcheck", "http://127.0.0.1:9090/healthz"]
@@ -156,7 +169,7 @@ services:
       start_period: 10s
     depends_on:
       kafka-init: { condition: service_completed_successfully }
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
 
   realtime:
@@ -167,7 +180,10 @@ services:
       HTTP_ADDR: :8081
       # Dashboard origin(s) allowed to open the WebSocket, comma-separated.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
-      DASHBOARD_STATION: CGK
+      NETWORK_TIME_SCALE: "10"
+      # Shared with the Next.js server, which mints short-lived role tokens.
+      # deploy/gcp/deploy.sh generates a random one; this default is dev-only.
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-dev-internal-api-secret-change-me-0123456789}
     ports: ["8081:8081"]
     healthcheck:
       test: ["CMD", "/app", "healthcheck", "http://127.0.0.1:8081/healthz"]
@@ -175,7 +191,7 @@ services:
       timeout: 4s
       retries: 10
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       processor: { condition: service_healthy }
 
@@ -188,6 +204,7 @@ services:
     profiles: ["sim"]
     environment:
       INGEST_URL: http://ingest:8080
+      REALTIME_URL: http://realtime:8081
       SIM_RATE: "30"
       SIM_API_KEY: dev-cgk-scanner-fleet-key-7f3a9c2e # DEV ONLY
       SIM_CONTROL_ADDR: :8090
@@ -200,6 +217,7 @@ services:
       retries: 10
     depends_on:
       ingest: { condition: service_healthy }
+      realtime: { condition: service_healthy }
 
   # One-shot delivery verifier for chaos runs:
   #   docker compose --profile tools run --rm verify

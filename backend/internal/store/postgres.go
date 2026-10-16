@@ -100,12 +100,15 @@ func (p *Postgres) ApplyScan(ctx context.Context, ev *model.ScanEvent, partition
 
 		var newFlightID *int64
 		if ev.FlightNumber != "" {
-			// Pick the departure closest to the scan time for this flight number.
+			// Book onto the next departure that hasn't left yet; fall back to
+			// the instance closest to the scan time (e.g. historical replays).
 			var id int64
 			err := tx.QueryRow(ctx, `
 				SELECT id FROM flights
 				WHERE flight_number = $1
-				ORDER BY abs(extract(epoch FROM scheduled_departure - $2::timestamptz))
+				ORDER BY (status = 'SCHEDULED') DESC,
+				         CASE WHEN status = 'SCHEDULED' THEN extract(epoch FROM scheduled_departure)
+				              ELSE abs(extract(epoch FROM scheduled_departure - $2::timestamptz)) END
 				LIMIT 1`, ev.FlightNumber, ev.Timestamp,
 			).Scan(&id)
 			switch {
@@ -253,7 +256,9 @@ SELECT u.id, u.uld_type,
        u.current_weight_kg::float8,
        u.max_gross_weight_kg::float8,
        LEAST(u.max_gross_weight_kg, COALESCE(a.max_uld_weight_kg, u.max_gross_weight_kg))::float8,
-       COALESCE(u.location_id, ''), COALESCE(l.zone, ''), u.flight_id, COALESCE(f.flight_number, ''),
+       COALESCE(u.location_id, ''), COALESCE(l.zone, ''), COALESCE(l.station, ''),
+       u.flight_id, COALESCE(f.flight_number, ''), COALESCE(f.status, ''),
+       COALESCE(f.origin, ''), COALESCE(f.destination, ''), f.estimated_arrival,
        u.status::text, COALESCE(u.last_scanner_id, ''), u.last_scan_at, u.version, u.updated_at
 FROM ulds u
 LEFT JOIN warehouse_locations l ON l.id = u.location_id
@@ -264,7 +269,8 @@ func scanULDState(row pgx.Row) (model.ULDState, error) {
 	var s model.ULDState
 	var status string
 	err := row.Scan(&s.ID, &s.ULDType, &s.WeightKg, &s.MaxGrossWeightKg, &s.WeightLimitKg,
-		&s.LocationID, &s.Zone, &s.FlightID, &s.FlightNumber, &status, &s.LastScannerID, &s.LastScanAt,
+		&s.LocationID, &s.Zone, &s.Station, &s.FlightID, &s.FlightNumber, &s.FlightStatus,
+		&s.Origin, &s.Destination, &s.ETA, &status, &s.LastScannerID, &s.LastScanAt,
 		&s.Version, &s.UpdatedAt)
 	s.Status = model.ULDStatus(status)
 	s.Overweight = s.WeightKg > s.WeightLimitKg
@@ -284,8 +290,8 @@ func (p *Postgres) AllULDStates(ctx context.Context) ([]model.ULDState, error) {
 }
 
 const flightLoadSQL = `
-SELECT f.id, f.flight_number, a.registration, a.aircraft_type, f.origin, f.destination,
-       f.scheduled_departure, a.max_payload_kg::float8, a.max_uld_weight_kg::float8, a.uld_positions,
+SELECT f.id, f.flight_number, f.status, a.registration, a.aircraft_type, f.origin, f.destination,
+       f.scheduled_departure, f.departed_at, f.estimated_arrival, f.arrived_at, a.max_payload_kg::float8, a.max_uld_weight_kg::float8, a.uld_positions,
        COALESCE(SUM(u.current_weight_kg), 0)::float8,
        COUNT(u.id)::int,
        COUNT(u.id) FILTER (WHERE u.current_weight_kg > LEAST(u.max_gross_weight_kg, a.max_uld_weight_kg))::int,
@@ -293,11 +299,13 @@ SELECT f.id, f.flight_number, a.registration, a.aircraft_type, f.origin, f.desti
 FROM flights f
 JOIN aircrafts a ON a.id = f.aircraft_id
 LEFT JOIN ulds u ON u.flight_id = f.id
-WHERE $1 OR f.id = ANY($2)
+WHERE ($1 AND (f.status IN ('SCHEDULED', 'DEPARTED') OR f.arrived_at > now() - interval '2 hours'))
+   OR f.id = ANY($2)
 GROUP BY f.id, a.id
 ORDER BY f.scheduled_departure`
 
-// FlightLoads returns aggregates for the given flights, or all flights if ids is empty.
+// FlightLoads returns aggregates for the given flights, or for every active
+// flight (scheduled, airborne, or arrived within 2h) if ids is empty.
 func (p *Postgres) FlightLoads(ctx context.Context, ids []int64) ([]model.FlightLoad, error) {
 	if ids == nil {
 		ids = []int64{}
@@ -308,27 +316,42 @@ func (p *Postgres) FlightLoads(ctx context.Context, ids []int64) ([]model.Flight
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.FlightLoad, error) {
 		var f model.FlightLoad
-		err := r.Scan(&f.FlightID, &f.FlightNumber, &f.Aircraft, &f.AircraftType, &f.Origin, &f.Destination,
-			&f.Departure, &f.MaxPayloadKg, &f.MaxULDWeightKg, &f.ULDPositions,
+		err := r.Scan(&f.FlightID, &f.FlightNumber, &f.Status, &f.Aircraft, &f.AircraftType, &f.Origin, &f.Destination,
+			&f.Departure, &f.DepartedAt, &f.ETA, &f.ArrivedAt, &f.MaxPayloadKg, &f.MaxULDWeightKg, &f.ULDPositions,
 			&f.TotalWeightKg, &f.ULDCount, &f.OverweightULDs, &f.Version)
 		f.OverPayload = f.TotalWeightKg > f.MaxPayloadKg
 		return f, err
 	})
 }
 
-// Locations returns the scan points of one station (the dashboard's floor plan).
-func (p *Postgres) Locations(ctx context.Context, station string) ([]model.Location, error) {
+// Locations returns every scan point in the network (the dashboard filters by station).
+func (p *Postgres) Locations(ctx context.Context) ([]model.Location, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, zone, label, grid_x, grid_y, implied_status::text
-		FROM warehouse_locations WHERE station = $1 ORDER BY grid_y, grid_x`, station)
+		SELECT id, station, zone, label, grid_x, grid_y, implied_status::text
+		FROM warehouse_locations ORDER BY station, grid_y, grid_x`)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Location, error) {
 		var l model.Location
 		var st string
-		err := r.Scan(&l.ID, &l.Zone, &l.Label, &l.GridX, &l.GridY, &st)
+		err := r.Scan(&l.ID, &l.Station, &l.Zone, &l.Label, &l.GridX, &l.GridY, &st)
 		l.ImpliedStatus = model.ULDStatus(st)
 		return l, err
 	})
 }
+
+// Stations returns the airports that have at least one scan location.
+func (p *Postgres) Stations(ctx context.Context) ([]model.Station, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT a.iata, a.name, a.country, a.lat, a.lon FROM airports a
+		WHERE EXISTS (SELECT 1 FROM warehouse_locations l WHERE l.station = a.iata)
+		ORDER BY a.iata = 'CGK' DESC, a.iata`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[model.Station])
+}
+
+// Pool exposes the connection pool to sibling store files.
+func (p *Postgres) Pool() *pgxpool.Pool { return p.pool }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/redis/go-redis/v9"
 
@@ -12,7 +13,7 @@ import (
 
 const (
 	KeyULDLive    = "uld:live"    // hash: uld id        -> ULDState JSON
-	KeyFlightLive = "flight:live" // hash: flight number -> FlightLoad JSON
+	KeyFlightLive = "flight:live" // hash: flight id -> FlightLoad JSON (one flight number has many rotations)
 	ChannelEvents = "uld:events"  // pub/sub: Envelope JSON
 )
 
@@ -49,6 +50,12 @@ func NewRedis(ctx context.Context, addr string) (*Redis, error) {
 	return &Redis{rdb: rdb}, nil
 }
 
+// NewRedisLazy connects without a startup ping, for services where Redis is
+// optional (ingest only uses it to feed the live security stream).
+func NewRedisLazy(addr string) *Redis {
+	return &Redis{rdb: redis.NewClient(&redis.Options{Addr: addr})}
+}
+
 func (r *Redis) Client() *redis.Client { return r.rdb }
 func (r *Redis) Close() error          { return r.rdb.Close() }
 
@@ -70,7 +77,62 @@ func (r *Redis) PutULD(ctx context.Context, s model.ULDState) error {
 }
 
 func (r *Redis) PutFlight(ctx context.Context, f model.FlightLoad) error {
-	return r.put(ctx, KeyFlightLive, f.FlightNumber, f.Version, model.MsgFlightUpdate, f)
+	return r.put(ctx, KeyFlightLive, strconv.FormatInt(f.FlightID, 10), f.Version, model.MsgFlightUpdate, f)
+}
+
+// removeAndPublish deletes a hash field and, only if it existed, publishes
+// the removal, so repeated calls don't spam clients.
+var removeAndPublish = redis.NewScript(`
+if redis.call('HDEL', KEYS[1], ARGV[1]) == 1 then
+  redis.call('PUBLISH', KEYS[2], ARGV[2])
+  return 1
+end
+return 0
+`)
+
+func (r *Redis) remove(ctx context.Context, key, field, msgType string, data any) error {
+	env, err := json.Marshal(model.Envelope{Type: msgType, Data: data})
+	if err != nil {
+		return err
+	}
+	return removeAndPublish.Run(ctx, r.rdb, []string{key, ChannelEvents}, field, env).Err()
+}
+
+func (r *Redis) RemoveULD(ctx context.Context, id string) error {
+	return r.remove(ctx, KeyULDLive, id, model.MsgULDRemoved, map[string]string{"id": id})
+}
+
+func (r *Redis) RemoveFlight(ctx context.Context, id int64) error {
+	return r.remove(ctx, KeyFlightLive, strconv.FormatInt(id, 10), model.MsgFlightRemove, map[string]int64{"id": id})
+}
+
+// FlightIDs lists the flights currently in the projection.
+func (r *Redis) FlightIDs(ctx context.Context) ([]int64, error) {
+	keys, err := r.rdb.HKeys(ctx, KeyFlightLive).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, 0, len(keys))
+	for _, k := range keys {
+		if id, err := strconv.ParseInt(k, 10, 64); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// ResetFlights drops the flight projection before a full rebuild (v1 keyed
+// it by flight number; v2 keys by id).
+func (r *Redis) ResetFlights(ctx context.Context) error { return r.rdb.Del(ctx, KeyFlightLive).Err() }
+
+// PublishEvent sends a non-state notification (e.g. loadplan_update) to the
+// live channel.
+func (r *Redis) PublishEvent(ctx context.Context, msgType string, data any) error {
+	b, err := json.Marshal(model.Envelope{Type: msgType, Data: data})
+	if err != nil {
+		return err
+	}
+	return r.rdb.Publish(ctx, ChannelEvents, b).Err()
 }
 
 // Snapshot returns the raw JSON of every live ULD and flight, without

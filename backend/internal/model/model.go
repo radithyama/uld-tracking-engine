@@ -24,8 +24,12 @@ const (
 	StatusInTransit ULDStatus = "IN_TRANSIT"
 	StatusStaged    ULDStatus = "STAGED"
 	StatusLoaded    ULDStatus = "LOADED"
+	// Set by the network clock when the ULD's flight departs; never sent by
+	// scanners.
+	StatusInFlight ULDStatus = "IN_FLIGHT"
 )
 
+// Valid reports whether a scanner may report this status.
 func (s ULDStatus) Valid() bool {
 	switch s {
 	case StatusInTransit, StatusStaged, StatusLoaded:
@@ -114,8 +118,13 @@ type ULDState struct {
 	Overweight    bool       `json:"overweight"`
 	LocationID    string     `json:"location_id"`
 	Zone          string     `json:"zone"`
-	FlightID      *int64     `json:"-"`
+	Station       string     `json:"station"` // IATA of the current location; empty while in flight
+	FlightID      *int64     `json:"flight_id"`
 	FlightNumber  string     `json:"flight_number"`
+	FlightStatus  string     `json:"flight_status"`
+	Origin        string     `json:"origin"`
+	Destination   string     `json:"destination"`
+	ETA           *time.Time `json:"eta"`
 	Status        ULDStatus  `json:"status"`
 	LastScannerID string     `json:"last_scanner_id"`
 	LastScanAt    *time.Time `json:"last_scan_at"`
@@ -125,20 +134,24 @@ type ULDState struct {
 
 // FlightLoad aggregates the weight of every ULD assigned to a flight.
 type FlightLoad struct {
-	FlightID       int64     `json:"-"`
-	FlightNumber   string    `json:"flight_number"`
-	Aircraft       string    `json:"aircraft"`
-	AircraftType   string    `json:"aircraft_type"`
-	Origin         string    `json:"origin"`
-	Destination    string    `json:"destination"`
-	Departure      time.Time `json:"departure"`
-	MaxPayloadKg   float64   `json:"max_payload_kg"`
-	MaxULDWeightKg float64   `json:"max_uld_weight_kg"`
-	ULDPositions   int       `json:"uld_positions"`
-	TotalWeightKg  float64   `json:"total_weight_kg"`
-	ULDCount       int       `json:"uld_count"`
-	OverweightULDs int       `json:"overweight_ulds"`
-	OverPayload    bool      `json:"over_payload"`
+	FlightID       int64      `json:"id"`
+	FlightNumber   string     `json:"flight_number"`
+	Status         string     `json:"status"` // SCHEDULED | DEPARTED | ARRIVED | CANCELLED
+	Aircraft       string     `json:"aircraft"`
+	AircraftType   string     `json:"aircraft_type"`
+	Origin         string     `json:"origin"`
+	Destination    string     `json:"destination"`
+	Departure      time.Time  `json:"departure"`
+	DepartedAt     *time.Time `json:"departed_at"`
+	ETA            *time.Time `json:"eta"`
+	ArrivedAt      *time.Time `json:"arrived_at"`
+	MaxPayloadKg   float64    `json:"max_payload_kg"`
+	MaxULDWeightKg float64    `json:"max_uld_weight_kg"`
+	ULDPositions   int        `json:"uld_positions"`
+	TotalWeightKg  float64    `json:"total_weight_kg"`
+	ULDCount       int        `json:"uld_count"`
+	OverweightULDs int        `json:"overweight_ulds"`
+	OverPayload    bool       `json:"over_payload"`
 	// Microsecond timestamp of when the aggregate was computed; used as a
 	// version so a late, older aggregate can never overwrite a newer one.
 	Version int64 `json:"version"`
@@ -146,6 +159,7 @@ type FlightLoad struct {
 
 type Location struct {
 	ID            string    `json:"id"`
+	Station       string    `json:"station"`
 	Zone          string    `json:"zone"`
 	Label         string    `json:"label"`
 	GridX         int       `json:"x"`
@@ -153,11 +167,27 @@ type Location struct {
 	ImpliedStatus ULDStatus `json:"implied_status"`
 }
 
+// Station is an airport in the network.
+type Station struct {
+	IATA    string  `json:"iata"`
+	Name    string  `json:"name"`
+	Country string  `json:"country"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+}
+
 // Message types sent over the WebSocket / Redis pub-sub channel.
 const (
 	MsgSnapshot     = "snapshot"
 	MsgULDUpdate    = "uld_update"
+	MsgULDRemoved   = "uld_removed" // {id}
 	MsgFlightUpdate = "flight_update"
+	MsgFlightRemove = "flight_removed"  // {id}
+	MsgLoadPlan     = "loadplan_update" // {flight_id}
+
+	// Security stream (/ws/security, auditors only).
+	MsgSecurityEvent       = "security_event"
+	MsgSecurityAlertUpdate = "security_alert_update"
 )
 
 type Envelope struct {
