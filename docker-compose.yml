@@ -1,0 +1,220 @@
+name: uld-engine
+
+# Every container logs one JSON object per line to stdout. The json-file
+# driver below rotates them on disk (/var/lib/docker/containers/<id>/*-json.log)
+# and stamps each line with the listed labels, so a host log shipper
+# (Elastic Agent / Filebeat on a Security Onion sensor) can collect them.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+    labels: "siem.collect,siem.dataset"
+
+x-backend: &backend
+  restart: unless-stopped
+  logging: *logging
+  labels:
+    siem.collect: "true"
+    siem.dataset: "uld"
+  environment: &backend-env
+    KAFKA_BROKERS: kafka:9092
+    KAFKA_TOPIC: uld.telemetry
+    KAFKA_DLQ_TOPIC: uld.telemetry.dlq
+    KAFKA_GROUP_ID: uld-stream-processor
+    DATABASE_URL: postgres://uld:uld@postgres:5432/uld?sslmode=disable
+    REDIS_ADDR: redis:6379
+    LOG_LEVEL: info
+
+services:
+  # ---------------------------------------------------------------- infra
+  postgres:
+    image: postgres:17-alpine
+    logging: *logging
+    environment:
+      POSTGRES_USER: uld
+      POSTGRES_PASSWORD: uld
+      POSTGRES_DB: uld
+    ports: ["127.0.0.1:5432:5432"]   # loopback only: never expose the DB
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Executed once, in lexical order, on first boot of an empty volume.
+      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Healthy only once init scripts have run and the DB accepts queries.
+      test: ["CMD-SHELL", "pg_isready -U uld -d uld && psql -U uld -d uld -tAc 'SELECT 1 FROM airports LIMIT 1' | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    logging: *logging
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Single-node Kafka in KRaft mode (no Zookeeper). Data lives in the
+  # container's writable layer: it survives `kill`/`pause`/`stop`+`start`
+  # (the chaos scenarios) but not `docker compose down`.
+  kafka:
+    image: apache/kafka:3.9.1
+    logging: *logging
+    ports: ["127.0.0.1:29092:29092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      # In-network clients use kafka:9092; tools on the host use localhost:29092.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  # One-shot job: create topics explicitly so partition count is deterministic.
+  kafka-init:
+    image: apache/kafka:3.9.1
+    logging: *logging
+    depends_on:
+      kafka: { condition: service_healthy }
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic uld.telemetry --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic uld.telemetry.dlq --partitions 1 --replication-factor 1
+        echo "topics ready"
+
+  # ------------------------------------------------------------- services
+  # Go images are distroless (no shell/curl): each binary implements
+  # `<binary> healthcheck <url>` for Docker health probes.
+  ingest:
+    <<: *backend
+    build: { context: ./backend, args: { SERVICE: ingest } }
+    environment:
+      <<: *backend-env
+      HTTP_ADDR: :8080
+      API_KEYS_FILE: /etc/uld/api-keys.json
+      SPOOL_DIR: /var/lib/uld/spool
+      SPOOL_MAX_MB: "512"
+      KAFKA_PUBLISH_TIMEOUT: 3s
+      AUTH_BRUTE_FORCE_THRESHOLD: "10"
+      AUTH_BRUTE_FORCE_WINDOW: 1m
+      # Emit ULD-AUTH-000 for every authenticated request (~4/s with the
+      # simulator). Needed for failure→success correlation; disable to cut volume.
+      AUTH_LOG_SUCCESS: "true"
+    ports: ["8080:8080"]
+    volumes:
+      - ./backend/config/api-keys.dev.json:/etc/uld/api-keys.json:ro
+      # Durable spool: telemetry accepted during a Kafka outage survives an
+      # ingest restart.
+      - ingest-spool:/var/lib/uld/spool
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+
+  processor:
+    <<: *backend
+    build: { context: ./backend, args: { SERVICE: processor } }
+    environment:
+      <<: *backend-env
+      PROCESSOR_WORKERS: "6"
+      METRICS_ADDR: :9090
+      DETECT_MAX_SPEED_KMH: "1000"
+      DETECT_WEIGHT_SUSPICIOUS_MARGIN: "0.25"
+    ports: ["127.0.0.1:9090:9090"]   # metrics: internal
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck", "http://127.0.0.1:9090/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  realtime:
+    <<: *backend
+    build: { context: ./backend, args: { SERVICE: realtime } }
+    environment:
+      <<: *backend-env
+      HTTP_ADDR: :8081
+      # Dashboard origin(s) allowed to open the WebSocket, comma-separated.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      DASHBOARD_STATION: CGK
+    ports: ["8081:8081"]
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck", "http://127.0.0.1:8081/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      processor: { condition: service_healthy }
+
+  # Synthetic scanner traffic with an at-least-once client (retries the same
+  # event ids) and a control API on :8090 used by the chaos scripts.
+  #   docker compose --profile sim up -d simulator
+  simulator:
+    <<: *backend
+    build: { context: ./backend, args: { SERVICE: simulator } }
+    profiles: ["sim"]
+    environment:
+      INGEST_URL: http://ingest:8080
+      SIM_RATE: "30"
+      SIM_API_KEY: dev-cgk-scanner-fleet-key-7f3a9c2e # DEV ONLY
+      SIM_CONTROL_ADDR: :8090
+      LOG_LEVEL: info
+    ports: ["127.0.0.1:8090:8090"]   # control API: internal
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck", "http://127.0.0.1:8090/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+    depends_on:
+      ingest: { condition: service_healthy }
+
+  # One-shot delivery verifier for chaos runs:
+  #   docker compose --profile tools run --rm verify
+  verify:
+    build: { context: ./backend, args: { SERVICE: verify } }
+    profiles: ["tools"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://uld:uld@postgres:5432/uld?sslmode=disable
+      SIM_URL: http://simulator:8090
+      INGEST_BASE_URL: http://ingest:8080
+      PROCESSOR_URL: http://processor:9090
+      REALTIME_URL: http://realtime:8081
+      VERIFY_TIMEOUT: 5m
+
+volumes:
+  pgdata:
+  ingest-spool:

@@ -1,0 +1,51 @@
+# ---- Dependencies ----
+node_modules/
+
+# ---- Build output / compiled binaries ----
+/backend/bin/
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/frontend/.next/
+/frontend/out/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Real (non-dev) API key files; only the dev file is committed.
+backend/config/api-keys.json
+backend/config/*.local.json
+
+# ---- Local data (Docker uses named volumes; these cover bind-mount/host runs) ----
+pgdata/
+postgres-data/
+**/postgres-data/
+redis-data/
+kafka-data/
+kraft-combined-logs/
+# Ingest disk spool (buffered telemetry while Kafka is down)
+/spool/
+**/spool/seg-*.jsonl
+
+# ---- Logs / test artefacts ----
+*.log
+coverage/
+coverage.out
+sent.txt
+
+# ---- Editor / OS / local tooling ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+.claude/

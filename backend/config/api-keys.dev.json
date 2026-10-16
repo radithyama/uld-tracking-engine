@@ -1,0 +1,38 @@
+{
+  "_comment": "DEV ONLY. SHA-256 of each API key; plaintext dev keys are listed in docs/RUNBOOK.md. Generate production hashes with: printf %s \"$KEY\" | sha256sum",
+  "keys": [
+    {
+      "id": "k-cgk-scanners-01",
+      "principal": "cgk-scanner-fleet",
+      "scopes": [
+        "scans:write"
+      ],
+      "sha256": "f8bd3d43ff0590bde7b48b1564a048d413d9c1d1f4536ba8f786b41ecf78d16d"
+    },
+    {
+      "id": "k-mel-scanners-01",
+      "principal": "mel-scanner-fleet",
+      "scopes": [
+        "scans:write"
+      ],
+      "sha256": "7bba9c7d07c08a4e39392262d9e896cf13189803090b71d80cb078188d7975d8"
+    },
+    {
+      "id": "k-ops-dashboard-ro",
+      "principal": "ops-dashboard",
+      "scopes": [
+        "scans:read"
+      ],
+      "sha256": "b221439a127cb49d182aec7bfe03db51a7c5fe2425674d34d04b862e1789acee"
+    },
+    {
+      "id": "k-retired-handheld-07",
+      "principal": "retired-handheld-07",
+      "scopes": [
+        "scans:write"
+      ],
+      "sha256": "751a5fe7e03bc7895bee433ff55703af2f9f7d19f918111befd073d4085bcdc7",
+      "revoked": true
+    }
+  ]
+}
