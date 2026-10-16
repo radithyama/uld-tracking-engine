@@ -29,6 +29,12 @@ fi
 
 echo "== deploying $(git rev-parse --short HEAD): $(git log -1 --format=%s)"
 
+# Heartbeat: steps like `go build` are silent for minutes; regular output keeps
+# an SSH session (the CI deploy runs over an IAP tunnel) from idling out.
+( while sleep 30; do echo "   ... $(date +%T) still working"; done ) &
+HEARTBEAT=$!
+trap 'kill $HEARTBEAT 2>/dev/null || true' EXIT
+
 # --- Backend --------------------------------------------------------------
 # Build before stopping anything, so a broken build leaves the old stack up.
 # One image at a time: parallel Go builds exhaust memory on small VMs.

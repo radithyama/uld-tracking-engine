@@ -53,8 +53,6 @@ jobs:
           zone: ${{ env.ZONE }}
           user: gha-deploy
           ssh_private_key: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
-          # Keep the IAP tunnel alive through long, quiet `go build` steps.
-          flags: --ssh-flag=-oServerAliveInterval=30 --ssh-flag=-oServerAliveCountMax=20
           command: >-
             set -e;
             cd ${{ env.APP_DIR }};
