@@ -36,6 +36,11 @@ kraft-combined-logs/
 /spool/
 **/spool/seg-*.jsonl
 
+# ---- Generated on the deploy VM by deploy/gcp/*.sh ----
+docker-compose.override.yml
+frontend/.build-stamp
+frontend/.built-ws-url
+
 # ---- Logs / test artefacts ----
 *.log
 coverage/

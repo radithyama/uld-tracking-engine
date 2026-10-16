@@ -1,0 +1,80 @@
+name: Deploy to GCE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_restart:
+        description: "Run `docker compose down` first (drops Kafka's in-container log and offsets)"
+        type: boolean
+        default: false
+
+# OIDC token for Workload Identity Federation; no long-lived GCP keys.
+permissions:
+  contents: read
+  id-token: write
+
+# Deploys queue instead of overlapping, and a running deploy is never killed
+# halfway through `docker compose up`.
+concurrency:
+  group: deploy-uld-demo
+  cancel-in-progress: false
+
+env:
+  INSTANCE: uld-demo
+  ZONE: us-central1-a
+  APP_DIR: /opt/uld-tracking-engine
+
+jobs:
+  deploy:
+    name: Pull, build & restart on uld-demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      # ssh-compute runs `gcloud compute ssh --tunnel-through-iap` and waits for
+      # the remote command to exit; a non-zero exit (failed build or failed
+      # health check in deploy.sh) fails this step. The remote script lives in
+      # the repo (deploy/gcp/deploy.sh) rather than inline here, because the
+      # action wraps inline scripts in `bash -c "..."`, which mangles quotes
+      # and `$` expansions.
+      - name: Deploy on VM
+        id: deploy
+        uses: google-github-actions/ssh-compute@v2
+        with:
+          instance_name: ${{ env.INSTANCE }}
+          zone: ${{ env.ZONE }}
+          user: gha-deploy
+          ssh_private_key: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
+          # Keep the IAP tunnel alive through long, quiet `go build` steps.
+          flags: --ssh-flag=-oServerAliveInterval=30 --ssh-flag=-oServerAliveCountMax=20
+          command: >-
+            set -e;
+            cd ${{ env.APP_DIR }};
+            sudo git pull --ff-only origin main;
+            sudo bash deploy/gcp/deploy.sh ${{ inputs.full_restart && '--full-restart' || '' }}
+
+      # The action captures remote output silently; print it so build and
+      # health-check logs are visible in the Actions UI (also on failure).
+      - name: Remote output
+        if: always() && steps.deploy.outcome != 'skipped'
+        env:
+          STDOUT: ${{ steps.deploy.outputs.stdout }}
+          STDERR: ${{ steps.deploy.outputs.stderr }}
+        run: |
+          echo "::group::stdout"; printf '%s\n' "$STDOUT"; echo "::endgroup::"
+          echo "::group::stderr"; printf '%s\n' "$STDERR"; echo "::endgroup::"
+
+      - name: Smoke test public endpoints
+        run: |
+          curl -fsS --retry 5 --retry-delay 5 --retry-all-errors https://uldpulse.radithyama.site/api/healthz
+          echo
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://uldpulse.radithyama.site/)
+          echo "dashboard HTTP $code"; test "$code" = 200
