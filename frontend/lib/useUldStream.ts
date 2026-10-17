@@ -2,6 +2,7 @@
 
 import { useEffect, useReducer } from "react";
 import type { ConnectionStatus, FlightLoad, ServerMessage, Station, ULD, WarehouseLocation } from "./types";
+import { fetchTicket, withTicket } from "./wsTicket";
 
 export interface StreamState {
   ulds: Record<string, ULD>;
@@ -120,9 +121,20 @@ export function useUldStream(url: string): StreamState {
       dispatch({ type: "messages", msgs, at: Date.now() });
     };
 
-    const connect = () => {
+    const scheduleReconnect = () => {
+      attempt += 1;
+      dispatch({ type: "status", status: "reconnecting" });
+      const base = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
+      reconnectTimer = setTimeout(connect, base / 2 + Math.random() * (base / 2));
+    };
+
+    const connect = async () => {
       dispatch({ type: "status", status: attempt === 0 ? "connecting" : "reconnecting" });
-      const socket = new WebSocket(url);
+      // A fresh single-use ticket for every (re)connect.
+      const ticket = await fetchTicket("ops");
+      if (disposed) return;
+      if (!ticket) return scheduleReconnect();
+      const socket = new WebSocket(withTicket(url, ticket));
       ws = socket;
 
       socket.onopen = () => {
@@ -141,17 +153,13 @@ export function useUldStream(url: string): StreamState {
       };
 
       socket.onclose = () => {
-        if (disposed) return;
-        attempt += 1;
-        dispatch({ type: "status", status: "reconnecting" });
-        const base = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
-        reconnectTimer = setTimeout(connect, base / 2 + Math.random() * (base / 2));
+        if (!disposed) scheduleReconnect();
       };
 
       socket.onerror = () => socket.close();
     };
 
-    connect();
+    void connect();
 
     return () => {
       disposed = true;

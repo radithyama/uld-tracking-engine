@@ -20,26 +20,49 @@ export interface Caller {
 export const json = (body: unknown, status = 200) =>
   Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
-/** Resolves the signed-in caller, or a 401/403 Response. */
-export async function requireCapability(cap: Capability): Promise<Caller | Response> {
+/** Resolves the signed-in caller (any role), or a 401 Response. */
+export async function requireSession(): Promise<Caller | Response> {
   const session = await auth();
   const role = session?.user?.role;
   if (!session?.user || !role) return json({ error: "sign in required" }, 401);
-  if (!can(role, cap)) return json({ error: `${role} may not ${cap}` }, 403);
   return { sub: session.user.email ?? session.user.name ?? "unknown", name: session.user.name ?? "unknown", role };
 }
 
-export async function mintToken(c: Caller, ttlSeconds = 120): Promise<string> {
+/** Resolves the signed-in caller if their role holds cap, or a 401/403 Response. */
+export async function requireCapability(cap: Capability): Promise<Caller | Response> {
+  const c = await requireSession();
+  if (c instanceof Response) return c;
+  return can(c.role, cap) ? c : json({ error: `${c.role} may not ${cap}` }, 403);
+}
+
+// Must match backend/internal/authz: issuer, audiences and lifetime caps.
+const ISSUER = "uldpulse-bff";
+const API_AUDIENCE = "uld-realtime";
+const TICKET_AUDIENCE = "uld-ws";
+
+function sign(c: Caller, audience: string, ttlSeconds: number): Promise<string> {
   const secret = process.env.INTERNAL_API_SECRET;
   if (!secret) throw new Error("INTERNAL_API_SECRET is not configured");
   return new SignJWT({ name: c.name, role: c.role })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setIssuer(ISSUER)
     .setSubject(c.sub)
-    .setAudience("uld-realtime")
+    .setAudience(audience)
+    .setJti(crypto.randomUUID())
     .setIssuedAt()
     .setExpirationTime(`${ttlSeconds}s`)
     .sign(new TextEncoder().encode(secret));
 }
+
+/** API token for server-to-server calls (Authorization: Bearer). */
+export const mintToken = (c: Caller, ttlSeconds = 120) => sign(c, API_AUDIENCE, ttlSeconds);
+
+/**
+ * Single-use WebSocket ticket. Browsers can't set headers on a WebSocket
+ * upgrade, so it travels in the URL; a distinct audience, a 60-second
+ * lifetime and one-time use (enforced in Go) make a leaked ticket useless.
+ */
+export const mintTicket = (c: Caller) => sign(c, TICKET_AUDIENCE, 60);
 
 /** Calls the Go realtime API as the caller and relays its JSON response. */
 export async function realtime(c: Caller, path: string, init: RequestInit = {}): Promise<Response> {

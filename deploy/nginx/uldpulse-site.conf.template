@@ -1,0 +1,92 @@
+# ULDPulse public site, rendered by deploy/gcp/deploy.sh (__DOMAIN__ is
+# replaced) to /etc/nginx/sites-available/uldpulse. TLS certificate paths are
+# the ones Certbot created; renewals keep working because the files stay put.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __DOMAIN__;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl ipv6only=on;
+    server_name __DOMAIN__;
+
+    ssl_certificate     /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    access_log /var/log/nginx/access.log uld_main;
+
+    client_max_body_size 2m;   # ingest caps batches at 1 MiB; let it return its own JSON 413
+    # Slowloris: drop clients that dribble headers or bodies.
+    client_header_timeout 10s;
+    client_body_timeout   10s;
+    send_timeout          30s;
+
+    # HSTS for every response, including the Go APIs (Next.js sets its own,
+    # which is hidden below so the header appears exactly once).
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+    # Live dashboard data: WebSocket -> realtime service (:8081). Tickets are
+    # verified by the service; Nginx caps upgrade rate and open sockets.
+    location /ws {
+        limit_req  zone=uld_ws burst=10 nodelay;
+        limit_conn uld_conn 10;
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 1h;           # long-lived socket (server pings every ~54s)
+        proxy_send_timeout 1h;
+    }
+
+    # Keep internal counters and readiness details private.
+    location = /api/metrics { return 404; }
+    location = /api/readyz  { return 404; }
+
+    # Scanner ingest API (:8080). Trailing slash strips the prefix:
+    #   /api/v1/scans -> /v1/scans,  /api/healthz -> /healthz
+    location /api/ {
+        limit_req zone=uld_api burst=100 nodelay;
+        proxy_pass http://127.0.0.1:8080/;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Sign-in endpoints: brute-force and credential-stuffing throttle.
+    location ~ ^/auth/(callback|signin)/ {
+        limit_req zone=uld_signin burst=10 nodelay;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Powered-By;
+    }
+
+    # Everything else: Next.js dashboard (:3000)
+    location / {
+        limit_req zone=uld_web burst=100 nodelay;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Powered-By;
+    }
+}

@@ -57,7 +57,8 @@ func main() {
 	runID := uuid.NewString()[:8]
 	snapshotURL := config.String("REALTIME_URL", "http://localhost:8081") + "/api/snapshot"
 
-	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 42))
+	// Simulated scanner behaviour only; nothing here is security-sensitive.
+	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 42)) // #nosec G404
 	fleet := seedFleet(rng)
 	client := &http.Client{Timeout: 10 * time.Second}
 	st := &stats{}

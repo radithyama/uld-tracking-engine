@@ -7,11 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"runtime/debug"
-	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -44,29 +42,6 @@ func Logger(l *slog.Logger) func(http.Handler) http.Handler {
 				"req_id", middleware.GetReqID(r.Context()))
 		})
 	}
-}
-
-// CORS allows the listed origins ("*" allows any).
-func CORS(origins []string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if o := r.Header.Get("Origin"); o != "" && OriginAllowed(origins, o) {
-				w.Header().Set("Access-Control-Allow-Origin", o)
-				w.Header().Set("Vary", "Origin")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-			}
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-func OriginAllowed(allowed []string, origin string) bool {
-	return slices.Contains(allowed, "*") || slices.Contains(allowed, origin)
 }
 
 // Serve runs srv until ctx is cancelled, then shuts down gracefully.
@@ -132,15 +107,4 @@ func Recoverer(l *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// ClientIP returns the TCP peer address. X-Forwarded-For is deliberately NOT
-// trusted: it is client-controlled, and an attacker could use it to evade
-// per-source brute-force detection or frame another IP in the SIEM.
-func ClientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

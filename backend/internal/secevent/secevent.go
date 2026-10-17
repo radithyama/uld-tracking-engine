@@ -83,6 +83,18 @@ var (
 		"alert", []string{"intrusion_detection"}, []string{"indicator"}, SevMedium, slog.LevelWarn}
 	IntegrityLoadedWeightChange = Rule{"ULD-INT-003", "Weight of a loaded ULD changed", "integrity.loaded_weight_changed",
 		"alert", []string{"intrusion_detection"}, []string{"indicator"}, SevHigh, slog.LevelError}
+	IntegrityEventReplay = Rule{"ULD-INT-004", "Event id replayed with an altered payload", "integrity.event_replay_altered",
+		"alert", []string{"intrusion_detection"}, []string{"indicator"}, SevHigh, slog.LevelError}
+
+	// --- Abuse & exhaustion (ingest, realtime) ---
+	RateLimited = Rule{"ULD-RATE-001", "Request rate limit exceeded", "abuse.rate_limited",
+		"event", []string{"network"}, []string{"denied"}, SevMedium, slog.LevelWarn}
+	WSConnLimited = Rule{"ULD-RATE-002", "WebSocket connection refused by connection limits", "abuse.ws_connection_limited",
+		"event", []string{"network"}, []string{"denied"}, SevMedium, slog.LevelWarn}
+	WSOriginRejected = Rule{"ULD-WS-001", "WebSocket upgrade from a disallowed origin", "web.ws_origin_rejected",
+		"alert", []string{"web", "intrusion_detection"}, []string{"denied", "indicator"}, SevMedium, slog.LevelWarn}
+	WSTicketRejected = Rule{"ULD-WS-002", "WebSocket upgrade with an invalid or replayed ticket", "web.ws_ticket_rejected",
+		"event", []string{"authentication", "web"}, []string{"denied"}, SevMedium, slog.LevelWarn}
 
 	// --- Pipeline integrity (processor) ---
 	DLQRouted = Rule{"ULD-DLQ-001", "Telemetry message routed to dead-letter queue", "pipeline.dlq_routed",

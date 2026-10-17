@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SecurityAlert } from "./types";
+import { fetchTicket, withTicket } from "./wsTicket";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8081/ws";
 
@@ -22,8 +23,8 @@ export interface SecurityStream {
 const MAX = 300;
 
 /**
- * Live security events for auditors. A fresh 60-second token is fetched from
- * the BFF before every (re)connect, since the browser can't send an
+ * Live security events for auditors. A fresh single-use ticket is fetched
+ * from the BFF before every (re)connect, since the browser can't send an
  * Authorization header on a WebSocket.
  */
 export function useSecurityStream(enabled: boolean): SecurityStream {
@@ -53,16 +54,10 @@ export function useSecurityStream(enabled: boolean): SecurityStream {
 
     const connect = async () => {
       setStatus(attempt === 0 ? "connecting" : "reconnecting");
-      let token = "";
-      try {
-        const res = await fetch("/bff/security/token", { cache: "no-store" });
-        if (res.ok) token = (await res.json()).token;
-      } catch {
-        /* retried below */
-      }
+      const ticket = await fetchTicket("security");
       if (disposed) return;
-      if (!token) return retry();
-      const socket = new WebSocket(`${WS_URL}/security?token=${encodeURIComponent(token)}`);
+      if (!ticket) return retry();
+      const socket = new WebSocket(withTicket(`${WS_URL}/security`, ticket));
       ws = socket;
       socket.onopen = () => {
         attempt = 0;

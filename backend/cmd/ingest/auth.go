@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -54,7 +55,8 @@ type Authenticator struct {
 }
 
 func loadKeys(path string) (map[string]apiKey, error) {
-	b, err := os.ReadFile(path)
+	// The path comes from operator configuration (API_KEYS_FILE), not from requests.
+	b, err := os.ReadFile(filepath.Clean(path)) // #nosec G304
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +223,9 @@ func (a *Authenticator) fail(w http.ResponseWriter, r *http.Request, rule seceve
 }
 
 // bruteForceTracker counts auth failures per source IP in a fixed window and
-// trips once per window when the threshold is crossed. It is a first-line
-// local signal; cross-host correlation is the SIEM's job.
+// trips once per window when the threshold is crossed; from then until the
+// window ends, the source is blocked (see limits.PerIP). It is a first-line
+// local control; cross-host correlation is the SIEM's job.
 type bruteForceTracker struct {
 	mu        sync.Mutex
 	window    time.Duration
@@ -238,6 +241,15 @@ type bfEntry struct {
 
 func newBruteForceTracker(window time.Duration, threshold int) *bruteForceTracker {
 	return &bruteForceTracker{window: window, threshold: threshold, m: map[string]*bfEntry{}}
+}
+
+// blocked reports whether ip has reached the failure threshold in the
+// current window.
+func (b *bruteForceTracker) blocked(ip string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e := b.m[ip]
+	return e != nil && e.count >= b.threshold && time.Since(e.start) <= b.window
 }
 
 func (b *bruteForceTracker) fail(ip string) (count int, trip bool) {

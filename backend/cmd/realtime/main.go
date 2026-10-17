@@ -24,6 +24,7 @@ import (
 	"github.com/radithya/uld-engine/internal/httpx"
 	"github.com/radithya/uld-engine/internal/logx"
 	"github.com/radithya/uld-engine/internal/model"
+	"github.com/radithya/uld-engine/internal/ratelimit"
 	"github.com/radithya/uld-engine/internal/realtime"
 	"github.com/radithya/uld-engine/internal/secevent"
 	"github.com/radithya/uld-engine/internal/store"
@@ -45,7 +46,13 @@ func main() {
 	ctx, stop := logx.SignalContext()
 	defer stop()
 
-	origins := config.List("ALLOWED_ORIGINS", "http://localhost:3000")
+	origins, err := httpx.NormalizeOrigins(config.List("ALLOWED_ORIGINS", "http://localhost:3000"))
+	if err != nil {
+		logx.Fatal(log, "ALLOWED_ORIGINS", err)
+	}
+	if err := httpx.SetTrustedProxies(config.List("TRUSTED_PROXIES", "")); err != nil {
+		logx.Fatal(log, "TRUSTED_PROXIES", err)
+	}
 
 	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	pg, err := store.NewPostgres(startCtx, cfg.DatabaseURL, 4)
@@ -78,10 +85,15 @@ func main() {
 		log.Warn("INTERNAL_API_SECRET not set: role-gated APIs and /ws/security are disabled")
 	}
 
+	// Security events raised here (rejected origins, connection limits)
+	// join the same stream as everything else.
+	secPub := store.NewSecurityPublisher(cache, log)
+	secevent.SetSink("realtime", secPub.Submit)
+
 	hub := realtime.NewHub(log)
 	secHub := realtime.NewHub(log)
 
-	snapshot := func(ctx context.Context) ([]byte, error) {
+	snapshot := realtime.CoalesceSnapshots(func(ctx context.Context) ([]byte, error) {
 		ulds, flights, err := cache.Snapshot(ctx)
 		if err != nil {
 			return nil, err
@@ -89,7 +101,7 @@ func main() {
 		return json.Marshal(model.Envelope{Type: model.MsgSnapshot, Data: snapshotData{
 			ULDs: ulds, Flights: flights, Locations: locations, Stations: stations, TimeScale: timeScale,
 		}})
-	}
+	})
 	securitySnapshot := func(ctx context.Context) ([]byte, error) {
 		alerts, err := pg.ListSecurityAlerts(ctx, "", 150)
 		if err != nil {
@@ -100,7 +112,8 @@ func main() {
 
 	host, _ := os.Hostname()
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
+	go func() { defer wg.Done(); secPub.Run(ctx) }()
 	go func() { defer wg.Done(); hub.Run(ctx) }()
 	go func() { defer wg.Done(); secHub.Run(ctx) }()
 	go func() { defer wg.Done(); relay(ctx, log, cache.Client(), store.ChannelEvents, hub) }()
@@ -119,11 +132,20 @@ func main() {
 	}()
 
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, httpx.Logger(log), httpx.Recoverer(log))
+	r.Use(middleware.RequestID, httpx.Logger(log), httpx.Recoverer(log), httpx.SecurityHeaders)
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "clients": hub.ClientCount()})
 	})
-	r.With(httpx.CORS(origins)).Get("/api/snapshot", func(w http.ResponseWriter, r *http.Request) {
+	snapshotLimit := ratelimit.NewKeyed(2, 10, 10000)
+	r.With(httpx.CORS(origins, http.MethodGet), func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !snapshotLimit.Allow(httpx.ClientIP(r)) {
+				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}).Get("/api/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		b, err := snapshot(r.Context())
 		if err != nil {
 			httpx.WriteError(w, http.StatusServiceUnavailable, "snapshot unavailable", nil)
@@ -136,16 +158,35 @@ func main() {
 		ReadBufferSize:    1024,
 		WriteBufferSize:   4096,
 		EnableCompression: true,
+		HandshakeTimeout:  10 * time.Second,
+		// Admission has already rejected disallowed origins (with a SIEM
+		// event); this keeps the check in place even if it's bypassed.
 		CheckOrigin: func(r *http.Request) bool {
 			o := r.Header.Get("Origin")
 			return o == "" || httpx.OriginAllowed(origins, o)
 		},
 	}
-	// Live operations feed: public (equivalent to a departures board).
-	r.Handle("/ws", &realtime.Handler{Hub: hub, Log: log, Snapshot: snapshot, Upgrader: upgrader})
-	// Security event stream: security auditors only (?token= minted by the BFF).
-	r.With(authz.Require(secret, authz.RoleSecurityAuditor)).Handle("/ws/security",
-		&realtime.Handler{Hub: secHub, Log: log, Snapshot: securitySnapshot, Upgrader: upgrader})
+	// One connection budget for both endpoints.
+	admission := &realtime.Admission{
+		Log:     log,
+		Origins: origins,
+		Upgrade: ratelimit.NewKeyed(float64(config.Int("WS_UPGRADES_PER_MIN_PER_IP", 30))/60, config.Int("WS_UPGRADE_BURST_PER_IP", 10), 50000),
+		Conns:   ratelimit.NewConns(config.Int("WS_MAX_CONNS_PER_IP", 8), config.Int("WS_MAX_CONNS", 2000)),
+		Report:  secevent.NewThrottle(time.Minute),
+	}
+	tickets := cache.Tickets()
+	feed := &realtime.Handler{Hub: hub, Log: log, Snapshot: snapshot, Upgrader: upgrader, Admission: admission}
+	if len(secret) > 0 {
+		// Live operations feed: any signed-in role, with a single-use ticket
+		// from the dashboard server (GET /bff/ws/ticket).
+		r.With(admission.Precheck, authz.RequireTicket(secret, tickets, authz.Roles...)).Handle("/ws", feed)
+	} else {
+		log.Warn("INTERNAL_API_SECRET not set: /ws is open to anyone (local development only)")
+		r.With(admission.Precheck).Handle("/ws", feed)
+	}
+	// Security event stream: security auditors only.
+	r.With(admission.Precheck, authz.RequireTicket(secret, tickets, authz.RoleSecurityAuditor)).Handle("/ws/security",
+		&realtime.Handler{Hub: secHub, Log: log, Snapshot: securitySnapshot, Upgrader: upgrader, Admission: admission})
 	r.Mount("/api/v1", (&api{log: log, pg: pg, cache: cache}).routes(secret))
 
 	// No WriteTimeout: WebSocket connections are long-lived and manage their

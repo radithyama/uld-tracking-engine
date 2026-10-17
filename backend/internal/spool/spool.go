@@ -95,7 +95,7 @@ func Open(dir string, maxBytes int64, maxSegRecords int) (*Spool, error) {
 }
 
 func scanSegment(path string) (segment, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- segment paths come from listing the spool directory
 	if err != nil {
 		return segment{}, err
 	}
@@ -170,7 +170,7 @@ func (s *Spool) openActiveLocked() error {
 	}
 	s.lastSeq = seq
 	name := fmt.Sprintf("seg-%020d.jsonl", seq)
-	f, err := os.OpenFile(filepath.Join(s.dir, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o640)
+	f, err := os.OpenFile(filepath.Join(s.dir, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- name is generated above
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,139 @@
+name: Security
+
+# SAST, dependency audits and container scanning. Runs on every pull request,
+# weekly (new CVEs appear without code changes), and as a required gate in
+# deploy.yml: a failure here blocks the production deploy.
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+
+permissions:
+  contents: read
+  security-events: write # SARIF upload to the repository's Security tab
+
+# Third-party actions are pinned to full commit SHAs: a tag can be moved to
+# malicious code (as happened to trivy-action's tags in 2025); a SHA can't.
+jobs:
+  go:
+    name: Go SAST, vulnerabilities & tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # gosec: hard-coded credentials, SQL built from strings, weak crypto and
+      # randomness, unsafe file paths/permissions, unchecked TLS... Justified
+      # exceptions are annotated in code with `#nosec <rule> -- reason`.
+      - name: gosec (fails on any finding)
+        run: |
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 \
+            -fmt sarif -out gosec.sarif -stdout -verbose text ./...
+      - name: Upload gosec results
+        if: always() && hashFiles('backend/gosec.sarif') != ''
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with: { sarif_file: backend/gosec.sarif, category: gosec }
+
+      # govulncheck reports only vulnerabilities in code paths we actually call.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  frontend:
+    name: Frontend audit, security lint & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-fund --ignore-scripts
+
+      # Blocking: anything that ships to production. Dev-only tooling (lint,
+      # build) is reported but doesn't block, since it never runs on a
+      # request path and some advisories there have no upstream fix yet.
+      - name: npm audit (runtime dependencies, blocking)
+        run: npm audit --omit=dev --audit-level=high
+      - name: npm audit (dev dependencies, report only)
+        run: npm audit --audit-level=high || echo "::warning::dev-dependency advisories found (see log)"
+
+      # eslint-plugin-security + XSS rules (no-danger, no script: URLs, eval).
+      - name: Security lint
+        run: npx eslint . --max-warnings=0
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  containers:
+    name: Trivy scan (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ingest, processor, realtime, simulator, migrate, verify]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Build image
+        run: docker build --build-arg SERVICE=${{ matrix.service }} -t uld-${{ matrix.service }}:${{ github.sha }} backend
+      # Blocks on CRITICAL/HIGH CVEs that have a fix available. Unfixed ones
+      # can't be remediated by us and would block every deploy until upstream
+      # ships a patch; they still appear in the SARIF report.
+      - name: Trivy image scan (blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: uld-${{ matrix.service }}:${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+      - name: Trivy image report (all severities)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: uld-${{ matrix.service }}:${{ github.sha }}
+          scanners: vuln
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          skip-setup-trivy: true
+      - name: Upload Trivy results
+        if: always() && hashFiles(format('trivy-{0}.sarif', matrix.service)) != ''
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
+
+  dashboard-deps:
+    # The Next.js dashboard runs as a hardened systemd service rather than a
+    # container, so its runtime dependencies are scanned from the lockfile.
+    name: Trivy scan (dashboard dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Trivy filesystem scan (blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: frontend
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

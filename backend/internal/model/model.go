@@ -52,12 +52,27 @@ type ScanEvent struct {
 	Timestamp    time.Time `json:"timestamp"`
 }
 
-// IATA ULD identifier: 3-letter type, 4-5 digit serial, 2-char owner code.
-var uldIDPattern = regexp.MustCompile(`^[A-Z]{3}[0-9]{4,5}[A-Z0-9]{2}$`)
+// Server-side bounds on every field, enforced before anything reaches Kafka.
+// Free-text fields end up in Postgres, logs and the dashboard, so they are
+// restricted to short, plain identifiers.
+var (
+	// IATA ULD identifier: 3-letter type, 4-5 digit serial, 2-char owner code.
+	uldIDPattern = regexp.MustCompile(`^[A-Z]{3}[0-9]{4,5}[A-Z0-9]{2}$`)
+	// Warehouse positions: STA-06, SYD-RCV-01.
+	locationPattern = regexp.MustCompile(`^[A-Z0-9]{2,4}(-[A-Z0-9]{1,4}){1,3}$`)
+	// IATA flight designator: 2-char airline code, 1-4 digits, optional suffix.
+	flightPattern = regexp.MustCompile(`^[A-Z0-9]{2}[0-9]{1,4}[A-Z]?$`)
+	// Device ids: SCN-RCV-01, WEB-LOADMASTER.
+	scannerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`)
+)
 
 const (
 	maxWeightKg  = 20000 // well above any real ULD; guards against sensor garbage
 	maxClockSkew = 5 * time.Minute
+	// MaxEventAge bounds how far in the past a scan may claim to be. Together
+	// with ingest's event-id replay window (same length) it leaves no gap in
+	// which an old, captured event could be replayed unnoticed.
+	MaxEventAge = 24 * time.Hour
 )
 
 // Normalize canonicalises casing and fills in server-side defaults.
@@ -84,10 +99,10 @@ func (e *ScanEvent) Validate(now time.Time) error {
 		errs = append(errs, errors.New("event_id must be a UUID"))
 	}
 	if !uldIDPattern.MatchString(e.ULDID) {
-		errs = append(errs, fmt.Errorf("uld_id %q is not a valid IATA ULD id", e.ULDID))
+		errs = append(errs, fmt.Errorf("uld_id %q is not a valid IATA ULD id", Truncate(e.ULDID, 16)))
 	}
-	if e.ScannerID == "" {
-		errs = append(errs, errors.New("scanner_id is required"))
+	if !scannerPattern.MatchString(e.ScannerID) {
+		errs = append(errs, errors.New("scanner_id must be 1-64 characters of A-Z, 0-9, '.', '_', ':' or '-'"))
 	}
 	if e.ScanType != ScanRFID && e.ScanType != ScanBarcode {
 		errs = append(errs, errors.New("scan_type must be RFID or BARCODE"))
@@ -95,8 +110,11 @@ func (e *ScanEvent) Validate(now time.Time) error {
 	if e.WeightKg < 0 || e.WeightKg > maxWeightKg {
 		errs = append(errs, fmt.Errorf("weight_kg must be between 0 and %d", maxWeightKg))
 	}
-	if e.LocationID == "" {
-		errs = append(errs, errors.New("location_id is required"))
+	if !locationPattern.MatchString(e.LocationID) {
+		errs = append(errs, fmt.Errorf("location_id %q is not a valid location id", Truncate(e.LocationID, 32)))
+	}
+	if e.FlightNumber != "" && !flightPattern.MatchString(e.FlightNumber) {
+		errs = append(errs, fmt.Errorf("flight_number %q is not an IATA flight designator", Truncate(e.FlightNumber, 16)))
 	}
 	if e.Status != "" && !e.Status.Valid() {
 		errs = append(errs, errors.New("status must be IN_TRANSIT, STAGED or LOADED"))
@@ -104,7 +122,18 @@ func (e *ScanEvent) Validate(now time.Time) error {
 	if e.Timestamp.After(now.Add(maxClockSkew)) {
 		errs = append(errs, errors.New("timestamp is in the future"))
 	}
+	if e.Timestamp.Before(now.Add(-MaxEventAge)) {
+		errs = append(errs, fmt.Errorf("timestamp is older than %s", MaxEventAge))
+	}
 	return errors.Join(errs...)
+}
+
+// Truncate caps attacker-controlled values echoed back in error messages.
+func Truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 // ULDState is the live, denormalised view of one ULD pushed to the dashboard.

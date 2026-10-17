@@ -11,7 +11,16 @@ x-logging: &logging
     max-file: "5"
     labels: "siem.collect,siem.dataset"
 
+# Container hardening for the Go services: no privilege escalation, no Linux
+# capabilities, and an immutable root filesystem (the binaries are static and
+# write only to their mounted volumes).
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  read_only: true
+
 x-backend: &backend
+  <<: *hardening
   restart: unless-stopped
   logging: *logging
   labels:
@@ -107,6 +116,7 @@ services:
   # One-shot job: apply pending SQL migrations (backend/migrations, embedded in
   # the binary). Databases created by v1 are baselined automatically.
   migrate:
+    <<: *hardening
     build: { context: ./backend, args: { SERVICE: migrate } }
     logging: *logging
     restart: "no"
@@ -133,9 +143,15 @@ services:
       # Emit ULD-AUTH-000 for every authenticated request (~4/s with the
       # simulator). Needed for failure→success correlation; disable to cut volume.
       AUTH_LOG_SUCCESS: "true"
-    ports: ["8080:8080"]
+      # Peers allowed to report the client address in X-Real-IP: the host
+      # (Nginx reaches the container through Docker's bridge gateway).
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1/32,::1/128}
+    # Loopback only: the public path is Nginx (TLS, rate limits, headers).
+    ports: ["127.0.0.1:8080:8080"]
     volumes:
-      - ./backend/config/api-keys.dev.json:/etc/uld/api-keys.json:ro
+      # Hashes only. deploy/gcp/deploy.sh writes per-VM keys to
+      # /etc/uld/api-keys.json; the dev file's plaintext keys are public.
+      - ${API_KEYS_HOST_FILE:-./backend/config/api-keys.dev.json}:/etc/uld/api-keys.json:ro
       # Durable spool: telemetry accepted during a Kafka outage survives an
       # ingest restart.
       - ingest-spool:/var/lib/uld/spool
@@ -184,7 +200,13 @@ services:
       # Shared with the Next.js server, which mints short-lived role tokens.
       # deploy/gcp/deploy.sh generates a random one; this default is dev-only.
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-dev-internal-api-secret-change-me-0123456789}
-    ports: ["8081:8081"]
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1/32,::1/128}
+      # WebSocket limits: concurrent sockets per client IP and in total, and
+      # upgrade attempts per IP per minute.
+      WS_MAX_CONNS_PER_IP: "8"
+      WS_MAX_CONNS: "2000"
+      WS_UPGRADES_PER_MIN_PER_IP: "30"
+    ports: ["127.0.0.1:8081:8081"]
     healthcheck:
       test: ["CMD", "/app", "healthcheck", "http://127.0.0.1:8081/healthz"]
       interval: 5s
@@ -206,7 +228,7 @@ services:
       INGEST_URL: http://ingest:8080
       REALTIME_URL: http://realtime:8081
       SIM_RATE: "30"
-      SIM_API_KEY: dev-cgk-scanner-fleet-key-7f3a9c2e # DEV ONLY
+      SIM_API_KEY: ${SIM_API_KEY:-dev-cgk-scanner-fleet-key-7f3a9c2e} # default is DEV ONLY
       SIM_CONTROL_ADDR: :8090
       LOG_LEVEL: info
     ports: ["127.0.0.1:8090:8090"]   # control API: internal
@@ -222,6 +244,7 @@ services:
   # One-shot delivery verifier for chaos runs:
   #   docker compose --profile tools run --rm verify
   verify:
+    <<: *hardening
     build: { context: ./backend, args: { SERVICE: verify } }
     profiles: ["tools"]
     restart: "no"

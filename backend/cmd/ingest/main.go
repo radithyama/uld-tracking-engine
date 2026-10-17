@@ -22,6 +22,7 @@ import (
 	"github.com/radithya/uld-engine/internal/kafkax"
 	"github.com/radithya/uld-engine/internal/logx"
 	"github.com/radithya/uld-engine/internal/model"
+	"github.com/radithya/uld-engine/internal/ratelimit"
 	"github.com/radithya/uld-engine/internal/secevent"
 	"github.com/radithya/uld-engine/internal/spool"
 	"github.com/radithya/uld-engine/internal/store"
@@ -35,6 +36,7 @@ const (
 type server struct {
 	log      *slog.Logger
 	pub      *Publisher
+	replay   *replayGuard
 	accepted atomic.Int64
 	rejected atomic.Int64
 }
@@ -51,13 +53,24 @@ func main() {
 	if err != nil {
 		logx.Fatal(log, "load api keys", err)
 	}
+	if err := httpx.SetTrustedProxies(config.List("TRUSTED_PROXIES", "")); err != nil {
+		logx.Fatal(log, "TRUSTED_PROXIES", err)
+	}
+	brute := newBruteForceTracker(
+		config.Duration("AUTH_BRUTE_FORCE_WINDOW", time.Minute),
+		config.Int("AUTH_BRUTE_FORCE_THRESHOLD", 10))
 	auth := &Authenticator{
-		log:    log,
-		byHash: keys,
-		brute: newBruteForceTracker(
-			config.Duration("AUTH_BRUTE_FORCE_WINDOW", time.Minute),
-			config.Int("AUTH_BRUTE_FORCE_THRESHOLD", 10)),
+		log:        log,
+		byHash:     keys,
+		brute:      brute,
 		logSuccess: config.String("AUTH_LOG_SUCCESS", "false") == "true",
+	}
+	lim := &limits{
+		log:    log,
+		perIP:  ratelimit.NewKeyed(float64(config.Int("INGEST_RATE_PER_IP", 100)), config.Int("INGEST_BURST_PER_IP", 200), 50000),
+		perKey: ratelimit.NewKeyed(float64(config.Int("INGEST_RATE_PER_KEY", 50)), config.Int("INGEST_BURST_PER_KEY", 100), 10000),
+		brute:  brute,
+		report: secevent.NewThrottle(time.Minute),
 	}
 
 	sp, err := spool.Open(
@@ -87,8 +100,6 @@ func main() {
 	replayDone := make(chan struct{})
 	go func() { defer close(replayDone); pub.RunReplayer(ctx) }()
 
-	s := &server{log: log, pub: pub}
-
 	// Security events also feed the dashboard's live security stream. Redis
 	// is optional here: if it's down, events are dropped from the stream but
 	// still logged to stdout for the SIEM.
@@ -98,9 +109,12 @@ func main() {
 	secevent.SetSink("ingest", secPub.Submit)
 	go secPub.Run(ctx)
 
+	s := &server{log: log, pub: pub, replay: &replayGuard{log: log, rdb: rdb, window: model.MaxEventAge + 5*time.Minute}}
+
 	r := chi.NewRouter()
-	// No middleware.RealIP: X-Forwarded-For is client-controlled (see httpx.ClientIP).
-	r.Use(middleware.RequestID, httpx.Logger(log), httpx.Recoverer(log))
+	// No middleware.RealIP: X-Forwarded-For is client-controlled. Client
+	// addresses come from httpx.ClientIP (X-Real-IP from trusted proxies only).
+	r.Use(middleware.RequestID, httpx.Logger(log), httpx.Recoverer(log), httpx.SecurityHeaders)
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	})
@@ -128,7 +142,7 @@ func main() {
 			"security_event_count": secevent.Counts(),
 		})
 	})
-	r.With(auth.Require("scans:write")).Post("/v1/scans", s.handleScans)
+	r.With(lim.PerIP, auth.Require("scans:write"), lim.PerKey).Post("/v1/scans", s.handleScans)
 
 	srv := &http.Server{
 		Addr:              config.String("HTTP_ADDR", ":8080"),
@@ -183,20 +197,58 @@ func (s *server) handleScans(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	var problems []fieldError
-	msgs := make([]kafka.Message, 0, len(events))
-	ids := make([]string, 0, len(events))
+	ids := make([]string, len(events))
+	digests := make([]string, len(events))
 	for i := range events {
 		ev := &events[i]
+		clientTimestamp := !ev.Timestamp.IsZero()
 		ev.Normalize(now)
 		if err := ev.Validate(now); err != nil {
 			problems = append(problems, fieldError{Index: i, Error: err.Error()})
 			continue
 		}
+		ids[i], digests[i] = ev.EventID, digest(*ev, clientTimestamp)
+	}
+	if len(problems) > 0 {
+		s.rejected.Add(int64(len(events)))
+		s.inputRejected(r, "schema_validation_failed", len(problems), problems[0].Error)
+		httpx.WriteError(w, http.StatusUnprocessableEntity, "validation failed", problems)
+		return
+	}
+
+	verdict := s.replay.check(r.Context(), ids, digests)
+	if len(verdict.altered) > 0 {
+		s.rejected.Add(int64(len(events)))
+		i := verdict.altered[0]
+		p := principalFrom(r.Context())
+		secevent.Emit(r.Context(), s.log, secevent.IntegrityEventReplay, "failure", "event_id_reused_with_different_payload",
+			append(requestAttrs(r, nil),
+				slog.Group("user", slog.String("name", p.Name)),
+				slog.Group("api_key", slog.String("id", p.KeyID)),
+				slog.Group("uld", slog.String("id", events[i].ULDID), slog.String("location_id", events[i].LocationID)),
+				slog.String("replayed_event_id", events[i].EventID),
+				slog.Int("altered_events", len(verdict.altered)))...)
+		problems = make([]fieldError, 0, len(verdict.altered))
+		for _, i := range verdict.altered {
+			problems = append(problems, fieldError{Index: i, Error: "event_id was already accepted with a different payload"})
+		}
+		httpx.WriteError(w, http.StatusConflict, "replayed event_id", problems)
+		return
+	}
+
+	msgs := make([]kafka.Message, 0, len(events))
+	var newIDs, newDigests []string
+	for i := range events {
+		if verdict.duplicate[i] {
+			continue // honest retry of an event we already accepted
+		}
+		ev := &events[i]
 		payload, err := json.Marshal(ev)
 		if err != nil {
 			problems = append(problems, fieldError{Index: i, Error: err.Error()})
 			continue
 		}
+		newIDs, newDigests = append(newIDs, ids[i]), append(newDigests, digests[i])
 		msgs = append(msgs, kafka.Message{
 			Key:   []byte(ev.ULDID),
 			Value: payload,
@@ -206,12 +258,16 @@ func (s *server) handleScans(w http.ResponseWriter, r *http.Request) {
 				{Key: "content-type", Value: []byte("application/json")},
 			},
 		})
-		ids = append(ids, ev.EventID)
 	}
 	if len(problems) > 0 {
-		s.rejected.Add(int64(len(events)))
-		s.inputRejected(r, "schema_validation_failed", len(problems), problems[0].Error)
-		httpx.WriteError(w, http.StatusUnprocessableEntity, "validation failed", problems)
+		httpx.WriteError(w, http.StatusInternalServerError, "encoding failed", problems)
+		return
+	}
+	duplicates := len(events) - len(msgs)
+	if len(msgs) == 0 {
+		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
+			"accepted": 0, "duplicates": duplicates, "event_ids": ids, "durability": "duplicate",
+		})
 		return
 	}
 
@@ -224,9 +280,10 @@ func (s *server) handleScans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.replay.mark(r.Context(), newIDs, newDigests)
 	s.accepted.Add(int64(len(msgs)))
 	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
-		"accepted": len(msgs), "event_ids": ids, "durability": durability,
+		"accepted": len(msgs), "duplicates": duplicates, "event_ids": ids, "durability": durability,
 	})
 }
 

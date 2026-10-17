@@ -21,32 +21,43 @@ const (
 // concurrent reader and one concurrent writer per connection, so all reads
 // happen in readPump and all writes in writePump.
 type Client struct {
-	hub    *Hub
-	conn   *websocket.Conn
-	send   chan *websocket.PreparedMessage
-	remote string
+	hub     *Hub
+	conn    *websocket.Conn
+	send    chan *websocket.PreparedMessage
+	remote  string
+	release func() // frees the connection-limit slot
 }
 
 // SnapshotFunc builds the initial full-state message for a new client.
 type SnapshotFunc func(ctx context.Context) ([]byte, error)
 
 type Handler struct {
-	Hub      *Hub
-	Log      *slog.Logger
-	Snapshot SnapshotFunc
-	Upgrader websocket.Upgrader
+	Hub       *Hub
+	Log       *slog.Logger
+	Snapshot  SnapshotFunc
+	Upgrader  websocket.Upgrader
+	Admission *Admission // connection limits (mount Admission.Precheck in front); nil admits all
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	release := func() {}
+	if h.Admission != nil {
+		var ok bool
+		if release, ok = h.Admission.Acquire(w, r); !ok {
+			return
+		}
+	}
 	conn, err := h.Upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		release()
 		return // Upgrade has already written an HTTP error
 	}
 	c := &Client{
-		hub:    h.Hub,
-		conn:   conn,
-		send:   make(chan *websocket.PreparedMessage, sendBuffer),
-		remote: r.RemoteAddr,
+		hub:     h.Hub,
+		conn:    conn,
+		send:    make(chan *websocket.PreparedMessage, sendBuffer),
+		remote:  r.RemoteAddr,
+		release: release,
 	}
 
 	// Register BEFORE reading the snapshot: any update published after this
@@ -57,6 +68,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"), time.Now().Add(writeWait))
 		_ = conn.Close()
+		release()
 		return
 	}
 
@@ -69,6 +81,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "snapshot unavailable"), time.Now().Add(writeWait))
 		_ = conn.Close()
+		release()
 		return
 	}
 
@@ -83,6 +96,7 @@ func (c *Client) readPump() {
 	defer func() {
 		c.hub.Unregister(c)
 		_ = c.conn.Close()
+		c.release()
 	}()
 	c.conn.SetReadLimit(maxInboundSize)
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))

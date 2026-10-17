@@ -39,6 +39,12 @@ func TestValidateRejects(t *testing.T) {
 		"bad status":    func(e *ScanEvent) { e.Status = "LOST" },
 		"future":        func(e *ScanEvent) { e.Timestamp = now.Add(time.Hour) },
 		"bad event id":  func(e *ScanEvent) { e.EventID = "nope" },
+		"too old":       func(e *ScanEvent) { e.Timestamp = now.Add(-25 * time.Hour) },
+		"no scanner":    func(e *ScanEvent) { e.ScannerID = "" },
+		"long scanner":  func(e *ScanEvent) { e.ScannerID = strings.Repeat("A", 65) },
+		"scanner html":  func(e *ScanEvent) { e.ScannerID = "<script>alert(1)</script>" },
+		"location sqli": func(e *ScanEvent) { e.LocationID = "STA-01' OR '1'='1" },
+		"bad flight":    func(e *ScanEvent) { e.FlightNumber = "GA880; DROP TABLE flights" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -49,6 +55,20 @@ func TestValidateRejects(t *testing.T) {
 				t.Fatal("expected error")
 			}
 		})
+	}
+}
+
+func TestValidateAcceptsRealIDs(t *testing.T) {
+	now := time.Now()
+	for _, loc := range []string{"STA-06", "SYD-RCV-01", "CGK-BUP-02"} {
+		for _, scanner := range []string{"SCN-RCV-01", "WEB-LOADMASTER", "ROGUE-01"} {
+			ev := validEvent()
+			ev.LocationID, ev.ScannerID, ev.FlightNumber = loc, scanner, "QZ7510"
+			ev.Normalize(now)
+			if err := ev.Validate(now); err != nil {
+				t.Errorf("%s/%s rejected: %v", loc, scanner, err)
+			}
+		}
 	}
 }
 

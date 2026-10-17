@@ -27,14 +27,24 @@ env:
   APP_DIR: /opt/uld-tracking-engine
 
 jobs:
+  # SAST, dependency audits and Trivy image scans. Any CRITICAL/HIGH finding
+  # with a fix available fails this job, and the deploy below never starts.
+  security:
+    name: Security gate
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      security-events: write
+
   deploy:
     name: Pull, build & restart on uld-demo
+    needs: security
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
       - name: Authenticate to Google Cloud (Workload Identity Federation)
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -47,7 +57,7 @@ jobs:
       # and `$` expansions.
       - name: Deploy on VM
         id: deploy
-        uses: google-github-actions/ssh-compute@v2
+        uses: google-github-actions/ssh-compute@907d824cb3cb1630ddd72c032f8c64be474b4117 # v2
         with:
           instance_name: ${{ env.INSTANCE }}
           zone: ${{ env.ZONE }}
@@ -70,9 +80,22 @@ jobs:
           echo "::group::stdout"; printf '%s\n' "$STDOUT"; echo "::endgroup::"
           echo "::group::stderr"; printf '%s\n' "$STDERR"; echo "::endgroup::"
 
-      - name: Smoke test public endpoints
+      - name: Smoke test public endpoints and security headers
         run: |
-          curl -fsS --retry 5 --retry-delay 5 --retry-all-errors https://uldpulse.radithyama.site/api/healthz
+          base=https://uldpulse.radithyama.site
+          curl -fsS --retry 5 --retry-delay 5 --retry-all-errors "$base/api/healthz"
           echo
-          code=$(curl -s -o /dev/null -w '%{http_code}' https://uldpulse.radithyama.site/)
-          echo "dashboard HTTP $code"; test "$code" = 200
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$base/signin")
+          echo "sign-in page HTTP $code"; test "$code" = 200
+          # Signed-out visitors are redirected to sign-in by the edge proxy.
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$base/")
+          echo "dashboard (signed out) HTTP $code"; test "$code" = 307
+          headers=$(curl -fsSI "$base/signin")
+          for h in strict-transport-security content-security-policy x-frame-options x-content-type-options referrer-policy; do
+            grep -qi "^$h:" <<<"$headers" || { echo "missing $h"; exit 1; }
+          done
+          ! grep -qiE '^(x-powered-by|server: nginx/[0-9])' <<<"$headers" || { echo "version banner exposed"; exit 1; }
+          # WebSocket feed requires a ticket.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$base/ws")
+          echo "/ws without ticket HTTP $code"; test "$code" = 401

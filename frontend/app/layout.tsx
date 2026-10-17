@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -28,12 +29,16 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  // Per-request CSP nonce from proxy.ts; the inline theme script needs it.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     // data-theme is set by the bootstrap script before hydration.
     <html lang="en" data-theme="light" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
+        {/* A fixed, build-time constant (no user input); runs before paint to avoid a theme flash. */}
+        {/* eslint-disable-next-line react/no-danger */}
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
       </head>
       <body className="flex min-h-full flex-col">
         <Providers>{children}</Providers>
