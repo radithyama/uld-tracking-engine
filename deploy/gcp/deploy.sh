@@ -46,9 +46,23 @@ fi
 # set_kv FILE KEY VALUE: add KEY only if missing, so values an operator adds
 # or edits by hand (e.g. AUTH_GOOGLE_ID) survive deploys.
 set_kv() { touch "$1"; grep -q "^$2=" "$1" || printf '%s=%s\n' "$2" "$3" >> "$1"; }
+# upsert_kv FILE KEY VALUE: always set KEY (for values derived from the deploy itself).
+upsert_kv() {
+  touch "$1"
+  if grep -q "^$2=" "$1"; then sed -i "s#^$2=.*#$2=$3#" "$1"; else printf '%s=%s\n' "$2" "$3" >> "$1"; fi
+}
 set_kv .env INTERNAL_API_SECRET "$INTERNAL_API_SECRET"
 
 DASH_ENV=/etc/uld/dashboard.env
+DASH_ENV_BEFORE=$(cat "$DASH_ENV" 2>/dev/null | sha256sum)
+# Public origin of the dashboard, derived from the WebSocket URL. Auth.js
+# needs it explicitly: behind Nginx it would otherwise build redirect URLs
+# from Next.js's internal host (localhost:3000).
+case "$WS_URL" in
+  wss://*) h=${WS_URL#wss://}; PUBLIC_ORIGIN="https://${h%%/*}" ;;
+  *)       h=${WS_URL#ws://}; h=${h%%/*}; PUBLIC_ORIGIN="http://${h%%:*}:3000" ;;
+esac
+upsert_kv "$DASH_ENV" AUTH_URL "$PUBLIC_ORIGIN"
 set_kv "$DASH_ENV" AUTH_SECRET "$AUTH_SECRET"
 set_kv "$DASH_ENV" AUTH_TRUST_HOST true
 set_kv "$DASH_ENV" INTERNAL_API_SECRET "$INTERNAL_API_SECRET"
@@ -57,6 +71,7 @@ set_kv "$DASH_ENV" INGEST_INTERNAL_URL http://127.0.0.1:8080
 set_kv "$DASH_ENV" SIM_CONTROL_URL http://127.0.0.1:8090
 set_kv "$DASH_ENV" SANDBOX_API_KEY dev-web-sandbox-key-5c2e81f0a9
 chmod 0640 "$DASH_ENV"
+[ "$(sha256sum < "$DASH_ENV")" = "$DASH_ENV_BEFORE" ] || DASH_ENV_CHANGED=true
 
 # Heartbeat: steps like `go build` are silent for minutes; regular output keeps
 # an SSH session (the CI deploy runs over an IAP tunnel) from idling out.
@@ -143,7 +158,7 @@ if [ "$(cat "$UNIT" 2>/dev/null)" != "$NEW_UNIT" ]; then
   restart_dashboard=true
 fi
 systemctl enable --quiet uld-dashboard
-if $restart_dashboard || ! systemctl is-active --quiet uld-dashboard; then
+if $restart_dashboard || [ "${DASH_ENV_CHANGED:-false}" = true ] || ! systemctl is-active --quiet uld-dashboard; then
   systemctl restart uld-dashboard
 fi
 
