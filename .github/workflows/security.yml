@@ -28,7 +28,10 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: backend/go.mod
+          # Latest 1.26 patch release, matching the golang:1.26-alpine image
+          # production binaries are built with (go.mod pins only the minimum).
+          go-version: "1.26.x"
+          check-latest: true
           cache-dependency-path: backend/go.sum
 
       # gosec: hard-coded credentials, SQL built from strings, weak crypto and
