@@ -2,14 +2,32 @@
 
 import { useEffect, useState } from "react";
 import { getProviders, signIn } from "next-auth/react";
+import { ArrowRight, Scale, ShieldCheck, Truck, type LucideIcon } from "lucide-react";
 import { ROLE_INFO, ROLES, type Role } from "@/lib/roles";
+import { Logo, ThemeToggle } from "@/components/Navbar";
 
-const ROLE_ICON: Record<Role, string> = { ground_handler: "⛟", loadmaster: "⚖", security_auditor: "⛨" };
-const ROLE_ACCENT: Record<Role, string> = {
-  ground_handler: "hover:border-sky-500/60 focus-visible:border-sky-500",
-  loadmaster: "hover:border-amber-500/60 focus-visible:border-amber-500",
-  security_auditor: "hover:border-red-500/60 focus-visible:border-red-500",
+const PERSONA: Record<Role, { icon: LucideIcon; tone: string; ring: string; points: string[] }> = {
+  ground_handler: {
+    icon: Truck,
+    tone: "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300",
+    ring: "hover:border-sky-300 focus-visible:border-sky-400 dark:hover:border-sky-500/50",
+    points: ["Live warehouse floor & network map", "Manual scanner tool"],
+  },
+  loadmaster: {
+    icon: Scale,
+    tone: "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
+    ring: "hover:border-amber-300 focus-visible:border-amber-400 dark:hover:border-amber-500/50",
+    points: ["Manifests & aircraft holds", "CG load optimizer", "Security drills & traffic control"],
+  },
+  security_auditor: {
+    icon: ShieldCheck,
+    tone: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300",
+    ring: "hover:border-rose-300 focus-visible:border-rose-400 dark:hover:border-rose-500/50",
+    points: ["Live SOC alert stream & triage", "Audit trail", "Read-only load plans"],
+  },
 };
+
+const STACK = ["Go", "Kafka", "PostgreSQL", "Redis", "WebSockets", "Next.js", "Auth.js", "Docker"];
 
 export default function SignInPage() {
   const [google, setGoogle] = useState(false);
@@ -27,37 +45,67 @@ export default function SignInPage() {
   };
 
   return (
-    <main className="grid min-h-screen place-items-center px-4 py-10">
-      <div className="w-full max-w-3xl">
-        <div className="mb-8 text-center">
-          <div className="text-xs font-semibold uppercase tracking-[0.3em] text-sky-400">ULDPulse</div>
-          <h1 className="mt-2 text-2xl font-semibold text-slate-100">ULD Operations Control</h1>
-          <p className="mt-2 text-sm text-slate-400">
-            Real-time air cargo tracking, load planning and SOC telemetry. Choose a demo role to explore.
+    <main className="relative min-h-screen bg-canvas">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-gradient-to-b from-indigo-50 to-transparent dark:from-indigo-500/10" />
+      <div className="relative mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
+        <Logo />
+        <ThemeToggle />
+      </div>
+
+      <div className="relative mx-auto grid max-w-6xl gap-10 px-5 pb-16 pt-6 lg:grid-cols-[1fr_1.15fr] lg:pt-14">
+        <section className="fade-in">
+          <span className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-xs font-medium text-ink-2 shadow-xs">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Live demo · streaming telemetry
+          </span>
+          <h1 className="mt-5 text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
+            Real-time air cargo,
+            <br />
+            <span className="text-accent">balanced and secured.</span>
+          </h1>
+          <p className="mt-4 max-w-lg text-base leading-relaxed text-ink-2">
+            ULDPulse tracks every Unit Load Device across a multi-airport network, optimizes aircraft centre of gravity, and streams
+            SIEM-ready security telemetry from scanner to screen in milliseconds.
           </p>
-        </div>
+          <ul className="mt-6 flex max-w-lg flex-wrap gap-1.5">
+            {STACK.map((t) => (
+              <li key={t} className="rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-muted shadow-xs">
+                {t}
+              </li>
+            ))}
+          </ul>
+        </section>
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          {ROLES.map((role) => (
-            <button
-              key={role}
-              type="button"
-              onClick={() => demo(role)}
-              disabled={busy !== null}
-              className={`group rounded-xl border border-slate-800 bg-slate-900/60 p-5 text-left transition focus:outline-none disabled:opacity-60 ${ROLE_ACCENT[role]}`}
-            >
-              <div className="text-2xl">{ROLE_ICON[role]}</div>
-              <div className="mt-3 font-semibold text-slate-100">{ROLE_INFO[role].label}</div>
-              <p className="mt-1 text-xs leading-relaxed text-slate-400">{ROLE_INFO[role].blurb}</p>
-              <div className="mt-4 text-xs font-medium text-sky-400 group-hover:underline">
-                {busy === role ? "Signing in…" : "Continue as demo →"}
-              </div>
-            </button>
-          ))}
-        </div>
+        <section className="fade-in">
+          <h2 className="text-sm font-semibold text-ink">Choose a demo persona</h2>
+          <p className="mt-1 text-sm text-muted">No sign-up. Each persona sees a different, role-gated slice of the operation.</p>
+          <div className="mt-4 space-y-3">
+            {ROLES.map((role) => {
+              const P = PERSONA[role];
+              return (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => demo(role)}
+                  disabled={busy !== null}
+                  className={`group card flex w-full items-center gap-4 p-4 text-left transition hover:shadow-md focus:outline-none disabled:opacity-60 ${P.ring}`}
+                >
+                  <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${P.tone}`}>
+                    <P.icon size={21} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold text-ink">{ROLE_INFO[role].label}</span>
+                    <span className="mt-0.5 block text-xs text-muted">{P.points.join(" · ")}</span>
+                  </span>
+                  <span className="flex items-center gap-1 text-sm font-medium text-accent">
+                    {busy === role ? "Signing in…" : "Enter"}
+                    <ArrowRight size={15} className="transition group-hover:translate-x-0.5" />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
 
-        {google && (
-          <div className="mt-6 text-center">
+          {google && (
             <button
               type="button"
               onClick={() => {
@@ -65,16 +113,16 @@ export default function SignInPage() {
                 void signIn("google", { redirectTo: "/" });
               }}
               disabled={busy !== null}
-              className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:border-slate-500 disabled:opacity-60"
+              className="btn-ghost mt-4 w-full"
             >
               Sign in with Google
             </button>
-          </div>
-        )}
+          )}
 
-        <p className="mt-8 text-center text-[11px] text-slate-600">
-          Demo environment. Balance figures are illustrative, not certified weight-and-balance data.
-        </p>
+          <p className="mt-6 text-[11px] text-muted">
+            Demo environment. Aircraft balance figures are illustrative, not certified weight-and-balance data.
+          </p>
+        </section>
       </div>
     </main>
   );

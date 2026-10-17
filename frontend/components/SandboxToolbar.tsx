@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronUp, FlaskConical, KeyRound, Pause, Plane, Play, Scale, ScanLine } from "lucide-react";
 import type { FlightLoad, ULD, WarehouseLocation } from "@/lib/types";
 import { can, type Role } from "@/lib/roles";
+import { sandboxChaos, sandboxScan, sandboxTraffic, type ActionResult, type ChaosKind, type TrafficState } from "@/lib/sandboxClient";
 
 interface Props {
   role: Role;
@@ -12,21 +14,14 @@ interface Props {
   flights: FlightLoad[];
 }
 
-interface Result {
-  id: number;
-  ok: boolean;
-  title: string;
-  detail: string;
-}
-
 let seq = 0;
 
 /** Collapsible bottom toolbar so reviewers can drive the system without a terminal. */
 export function SandboxToolbar({ role, station, ulds, locations, flights }: Props) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [results, setResults] = useState<Result[]>([]);
-  const [traffic, setTraffic] = useState<{ rate_per_sec?: number; paused?: boolean } | null>(null);
+  const [results, setResults] = useState<(ActionResult & { id: number })[]>([]);
+  const [traffic, setTraffic] = useState<TrafficState | null>(null);
 
   const stationLocs = useMemo(() => locations.filter((l) => l.station === station), [locations, station]);
   const stationULDs = useMemo(
@@ -51,103 +46,89 @@ export function SandboxToolbar({ role, station, ulds, locations, flights }: Prop
       .catch(() => {});
   }, [open, canTraffic]);
 
-  const push = (r: Omit<Result, "id">) => setResults((prev) => [{ id: ++seq, ...r }, ...prev].slice(0, 4));
-
-  const call = async (url: string, body: unknown, describe: (b: Record<string, unknown>) => Omit<Result, "id">) => {
+  const run = async (fn: () => Promise<ActionResult>) => {
     setBusy(true);
     try {
-      const res = await fetch(url, { method: "POST", body: JSON.stringify(body) });
-      const b = await res.json().catch(() => ({}));
-      if (!res.ok && res.status !== 202) {
-        const err = b.ingest?.details ? JSON.stringify(b.ingest.details) : b.error ?? `HTTP ${res.status}`;
-        push({ ok: false, title: "Rejected", detail: String(err) });
-      } else push(describe(b));
-      return b;
-    } catch {
-      push({ ok: false, title: "Network error", detail: url });
+      const r = await fn();
+      setResults((prev) => [{ id: ++seq, ...r }, ...prev].slice(0, 4));
     } finally {
       setBusy(false);
     }
   };
 
-  const chaos = (kind: "tamper" | "impossible_travel" | "unauthorized") =>
-    call("/bff/sandbox/chaos", { kind }, (b) => ({
-      ok: true,
-      title: `${kind.replace("_", " ")} → expect ${b.expected_rule}`,
-      detail: String(b.detail ?? ""),
-    }));
+  const chaos = (kind: ChaosKind) => run(() => sandboxChaos(kind));
 
-  const setRate = async (body: object) => {
-    const b = await call("/bff/sandbox/traffic", body, (b) => ({
-      ok: true,
-      title: "Telemetry simulator",
-      detail: b.paused ? "paused" : `${b.rate_per_sec} scans/s`,
-    }));
-    if (b) setTraffic(b);
-  };
+  const setRate = (body: Parameters<typeof sandboxTraffic>[0]) =>
+    run(async () => {
+      const r = await sandboxTraffic(body);
+      if (!r.ok) return { ok: false, title: "Simulator", detail: r.error };
+      setTraffic(r.state);
+      return { ok: true, title: "Telemetry simulator", detail: r.state.paused ? "paused" : `${r.state.rate_per_sec} scans/s` };
+    });
 
-  const field = "h-8 rounded-md border border-slate-700 bg-slate-900 px-2 text-xs text-slate-200 focus:border-sky-500 focus:outline-none";
+  const label = "text-[11px] font-semibold uppercase tracking-wider text-muted";
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 flex justify-center px-3 pb-3">
-      <div className="w-full max-w-5xl rounded-xl border border-slate-700 bg-slate-950/95 shadow-2xl backdrop-blur">
+    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-3 pb-3">
+      <div className="pointer-events-auto w-full max-w-5xl overflow-hidden rounded-2xl border border-line bg-surface/95 shadow-xl backdrop-blur">
         <button
           type="button"
           onClick={() => setOpen(!open)}
           aria-expanded={open}
-          className="flex w-full items-center justify-between px-4 py-2.5 text-sm font-medium text-slate-200"
+          className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-surface-2/60"
         >
-          <span>🧪 Interactive Sandbox <span className="ml-2 text-xs font-normal text-slate-500">drive the live system as {role.replace("_", " ")}</span></span>
-          <span className="text-slate-500">{open ? "▾" : "▴"}</span>
+          <span className="flex items-center gap-2.5">
+            <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent-soft text-accent-ink">
+              <FlaskConical size={15} />
+            </span>
+            <span>
+              <span className="block text-sm font-semibold text-ink">Interactive Sandbox</span>
+              <span className="block text-xs text-muted">Drive the live system as {role.replace("_", " ")}</span>
+            </span>
+          </span>
+          {open ? <ChevronDown size={18} className="text-muted" /> : <ChevronUp size={18} className="text-muted" />}
         </button>
 
         {open && (
-          <div className="grid gap-4 border-t border-slate-800 p-4 md:grid-cols-[1.4fr_1fr]">
-            <div className="space-y-4">
+          <div className="grid max-h-[55vh] gap-5 overflow-y-auto border-t border-line p-4 md:grid-cols-[1.4fr_1fr]">
+            <div className="space-y-5">
               {can(role, "sandbox.scan") && (
                 <form
                   className="space-y-2"
                   onSubmit={(e) => {
                     e.preventDefault();
-                    void call(
-                      "/bff/sandbox/scan",
-                      { uld_id: uldValue, location_id: locValue, weight_kg: Number(weight), flight_number: flight },
-                      (b) => ({ ok: true, title: `Scan accepted (${(b.ingest as { durability?: string })?.durability ?? "kafka"})`, detail: `${uldValue} @ ${locValue} · ${weight} kg` }),
-                    );
+                    void run(() => sandboxScan({ uld_id: uldValue, location_id: locValue, weight_kg: Number(weight), flight_number: flight }));
                   }}
                 >
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Simulate scan · {station}</div>
+                  <div className={label}>Simulate scan · {station}</div>
                   <div className="flex flex-wrap gap-2">
-                    <input
-                      list="sandbox-ulds"
-                      value={uldValue}
-                      onChange={(e) => setUld(e.target.value.toUpperCase())}
-                      className={`${field} w-32 font-mono`}
-                      aria-label="ULD id"
-                    />
+                    <input list="sandbox-ulds" value={uldValue} onChange={(e) => setUld(e.target.value.toUpperCase())} className="field w-32 font-mono" aria-label="ULD id" />
                     <datalist id="sandbox-ulds">
                       {stationULDs.map((u) => (
                         <option key={u.id} value={u.id} />
                       ))}
                     </datalist>
-                    <select value={locValue} onChange={(e) => setLoc(e.target.value)} className={field} aria-label="Location">
+                    <select value={locValue} onChange={(e) => setLoc(e.target.value)} className="field" aria-label="Bay">
                       {stationLocs.map((l) => (
                         <option key={l.id} value={l.id}>
                           {l.id}
                         </option>
                       ))}
                     </select>
-                    <input type="number" min={0} max={20000} step={10} value={weight} onChange={(e) => setWeight(e.target.value)} className={`${field} w-24`} aria-label="Weight kg" />
-                    <select value={flight} onChange={(e) => setFlight(e.target.value)} className={field} aria-label="Flight">
-                      <option value="">no flight change</option>
+                    <div className="relative">
+                      <input type="number" min={0} max={20000} step={10} value={weight} onChange={(e) => setWeight(e.target.value)} className="field w-28 pr-8" aria-label="Weight in kilograms" />
+                      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted">kg</span>
+                    </div>
+                    <select value={flight} onChange={(e) => setFlight(e.target.value)} className="field" aria-label="Flight">
+                      <option value="">Keep flight</option>
                       {departures.map((f) => (
                         <option key={f.id} value={f.flight_number}>
                           {f.flight_number} → {f.destination}
                         </option>
                       ))}
                     </select>
-                    <button type="submit" disabled={busy || !uldValue || !locValue} className="btn-primary !text-xs">
-                      Submit scan
+                    <button type="submit" disabled={busy || !uldValue || !locValue} className="btn-primary">
+                      <ScanLine size={15} /> Submit scan
                     </button>
                   </div>
                 </form>
@@ -155,16 +136,16 @@ export function SandboxToolbar({ role, station, ulds, locations, flights }: Prop
 
               {can(role, "sandbox.chaos") && (
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Security drills</div>
+                  <div className={label}>Security drills</div>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" disabled={busy} onClick={() => chaos("tamper")} className="btn-danger !text-xs" title="Load a ULD, then re-scan it 30% heavier">
-                      ⚖ Trigger tamper (+30%)
+                    <button type="button" disabled={busy} onClick={() => chaos("tamper")} className="btn-danger" title="Load a ULD, then re-scan it 30% heavier">
+                      <Scale size={15} /> Tamper +30%
                     </button>
-                    <button type="button" disabled={busy} onClick={() => chaos("impossible_travel")} className="btn-danger !text-xs" title="CGK then SYD, 5 seconds apart">
-                      ✈ Trigger impossible travel
+                    <button type="button" disabled={busy} onClick={() => chaos("impossible_travel")} className="btn-danger" title="CGK then SYD, 5 seconds apart">
+                      <Plane size={15} /> Impossible travel
                     </button>
-                    <button type="button" disabled={busy} onClick={() => chaos("unauthorized")} className="btn-ghost !text-xs" title="Scan signed with a forged API key">
-                      🔑 Unauthorized scan
+                    <button type="button" disabled={busy} onClick={() => chaos("unauthorized")} className="btn-ghost" title="Scan signed with a forged API key">
+                      <KeyRound size={15} /> Unauthorized scan
                     </button>
                   </div>
                 </div>
@@ -172,45 +153,61 @@ export function SandboxToolbar({ role, station, ulds, locations, flights }: Prop
 
               {canTraffic && (
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <div className={label}>
                     Telemetry traffic{" "}
-                    <span className="font-normal normal-case text-slate-400">
+                    <span className="font-normal normal-case tracking-normal text-ink-2">
                       {traffic ? (traffic.paused ? "· paused" : `· ${traffic.rate_per_sec} scans/s`) : ""}
                     </span>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" disabled={busy} onClick={() => setRate({ action: traffic?.paused ? "resume" : "pause" })} className="btn-ghost !text-xs">
-                      {traffic?.paused ? "▶ Resume" : "⏸ Pause"}
+                  <div className="inline-flex rounded-lg border border-line bg-surface-2 p-0.5">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setRate({ action: traffic?.paused ? "resume" : "pause" })}
+                      className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-ink-2 transition hover:text-ink"
+                    >
+                      {traffic?.paused ? <Play size={14} /> : <Pause size={14} />}
+                      {traffic?.paused ? "Resume" : "Pause"}
                     </button>
-                    {[5, 30].map((r) => (
-                      <button
-                        key={r}
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setRate({ action: "rate", rate: r })}
-                        className={`btn-ghost !text-xs ${traffic?.rate_per_sec === r && !traffic.paused ? "!border-sky-500 !text-sky-200" : ""}`}
-                      >
-                        {r} msg/s
-                      </button>
-                    ))}
+                    {[5, 30].map((r) => {
+                      const active = traffic?.rate_per_sec === r && !traffic.paused;
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setRate({ action: "rate", rate: r })}
+                          className={`rounded-md px-3 py-1.5 text-sm tabular-nums transition ${active ? "bg-surface font-medium text-accent-ink shadow-xs ring-1 ring-line" : "text-ink-2 hover:text-ink"}`}
+                        >
+                          {r} msg/s
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </div>
 
             <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Results</div>
+              <div className={`${label} mb-2`}>Results</div>
               <ul className="space-y-2" aria-live="polite">
                 {results.map((r) => (
-                  <li key={r.id} className={`rounded-md border px-3 py-2 text-xs ${r.ok ? "border-sky-500/30 bg-sky-500/5" : "border-red-500/40 bg-red-500/10"}`}>
-                    <div className={r.ok ? "font-medium text-sky-200" : "font-medium text-red-200"}>{r.title}</div>
-                    <div className="mt-0.5 break-words text-slate-400">{r.detail}</div>
+                  <li
+                    key={r.id}
+                    className={`fade-in rounded-lg border px-3 py-2 text-xs ${
+                      r.ok
+                        ? "border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10"
+                        : "border-rose-200 bg-rose-50 dark:border-rose-500/40 dark:bg-rose-500/10"
+                    }`}
+                  >
+                    <div className={`font-medium ${r.ok ? "text-emerald-800 dark:text-emerald-200" : "text-rose-800 dark:text-rose-200"}`}>{r.title}</div>
+                    <div className="mt-0.5 break-words text-ink-2">{r.detail}</div>
                   </li>
                 ))}
                 {results.length === 0 && (
-                  <li className="text-xs text-slate-500">
+                  <li className="rounded-lg border border-dashed border-line px-3 py-3 text-xs text-muted">
                     Actions go through the real ingest API, Kafka and processor. Security drills raise genuine detections
-                    {can(role, "security.view") ? " in the Security tab." : "; sign in as Security Auditor to triage them."}
+                    {can(role, "security.view") ? " in the SOC view." : "; switch to Security Auditor to triage them."}
                   </li>
                 )}
               </ul>

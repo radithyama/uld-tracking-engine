@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ClipboardList, ShieldAlert } from "lucide-react";
 import type { AlertStatus, AuditEntry, SecurityAlert } from "@/lib/types";
 import type { SecurityStream } from "@/lib/useSecurityStream";
 import { ago, useNow } from "@/lib/format";
@@ -16,18 +17,18 @@ const FAMILIES = [
 type Family = (typeof FAMILIES)[number]["key"];
 
 const TONE: Record<string, string> = {
-  violet: "border-violet-500/40 text-violet-200 bg-violet-500/10",
-  red: "border-red-500/40 text-red-200 bg-red-500/10",
-  amber: "border-amber-500/40 text-amber-200 bg-amber-500/10",
-  sky: "border-sky-500/40 text-sky-200 bg-sky-500/10",
-  slate: "border-slate-600 text-slate-300 bg-slate-500/10",
+  violet: "border-violet-200 dark:border-violet-500/40 text-violet-800 dark:text-violet-200 bg-violet-50 dark:bg-violet-500/10",
+  red: "border-rose-200 dark:border-rose-500/40 text-rose-700 dark:text-rose-200 bg-rose-50 dark:bg-rose-500/10",
+  amber: "border-amber-200 dark:border-amber-500/40 text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-500/10",
+  sky: "border-sky-200 dark:border-sky-500/40 text-sky-800 dark:text-sky-200 bg-sky-50 dark:bg-sky-500/10",
+  slate: "border-line text-ink-2 bg-surface",
 };
 
 export function severityStyle(sev: number) {
-  if (sev >= 99) return { label: "CRITICAL", cls: "bg-red-600 text-white" };
-  if (sev >= 73) return { label: "HIGH", cls: "bg-red-500/20 text-red-300 ring-1 ring-inset ring-red-500/40" };
-  if (sev >= 47) return { label: "MEDIUM", cls: "bg-amber-500/15 text-amber-300 ring-1 ring-inset ring-amber-500/30" };
-  return { label: "LOW", cls: "bg-slate-500/15 text-slate-300 ring-1 ring-inset ring-slate-500/30" };
+  if (sev >= 99) return { label: "CRITICAL", cls: "bg-rose-600 text-white" };
+  if (sev >= 73) return { label: "HIGH", cls: "bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-300 ring-1 ring-inset ring-rose-200 dark:ring-rose-500/40" };
+  if (sev >= 47) return { label: "MEDIUM", cls: "bg-amber-50 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-1 ring-inset ring-amber-200 dark:ring-amber-500/30" };
+  return { label: "LOW", cls: "bg-surface-2 text-ink-2 ring-1 ring-inset ring-line" };
 }
 
 function entity(a: SecurityAlert): string {
@@ -109,7 +110,7 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
             key={f.key}
             type="button"
             onClick={() => setFamily(family === f.key ? null : f.key)}
-            className={`rounded-lg border px-3 py-2.5 text-left transition ${TONE[f.tone]} ${family === f.key ? "ring-2 ring-white/40" : ""}`}
+            className={`rounded-lg border px-3 py-2.5 text-left transition ${TONE[f.tone]} ${family === f.key ? "ring-2 ring-accent/40" : ""}`}
           >
             <div className="text-[10px] font-semibold uppercase tracking-wider opacity-80">{f.label}</div>
             <div className="mt-1 flex items-baseline gap-2">
@@ -122,6 +123,7 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
 
       <div className="grid gap-5 xl:grid-cols-[1fr_380px]">
         <Panel
+          icon={ShieldAlert}
           title="Operations & security log"
           subtitle={`Live uld.security stream · ${stream.status === "open" ? "connected" : stream.status}`}
           action={
@@ -131,7 +133,7 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
                   key={s || "ALL"}
                   type="button"
                   onClick={() => setStatus(s)}
-                  className={`rounded px-2 py-1 ${status === s ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}
+                  className={`rounded px-2 py-1 ${status === s ? "bg-surface-2 text-ink" : "text-muted hover:text-ink"}`}
                 >
                   {s ? s.toLowerCase() : "all"}
                 </button>
@@ -139,8 +141,8 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
             </div>
           }
         >
-          {error && <div className="mb-2 rounded bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div>}
-          <ul className="max-h-[640px] divide-y divide-slate-800/80 overflow-auto">
+          {error && <div className="mb-2 rounded bg-rose-50 dark:bg-rose-500/10 px-3 py-2 text-sm text-rose-700 dark:text-rose-200">{error}</div>}
+          <ul className="max-h-[640px] divide-y divide-line overflow-auto">
             {rows.map((a) => {
               const sev = severityStyle(a.severity);
               const expanded = open === a.id;
@@ -148,19 +150,19 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
                 <li key={a.id} className={`py-2.5 ${a.status === "OPEN" && a.kind === "alert" ? "" : "opacity-80"}`}>
                   <div className="flex flex-wrap items-start gap-2">
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${sev.cls}`}>{sev.label}</span>
-                    <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{a.rule_id}</span>
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] text-ink-2">{a.rule_id}</span>
                     <button type="button" onClick={() => setOpen(expanded ? null : a.id)} className="min-w-0 flex-1 text-left">
-                      <div className="text-sm text-slate-100">{a.rule_name}</div>
-                      <div className="truncate text-xs text-slate-400">{entity(a)}</div>
+                      <div className="text-sm text-ink">{a.rule_name}</div>
+                      <div className="truncate text-xs text-muted">{entity(a)}</div>
                     </button>
-                    <div className="text-right text-[11px] text-slate-500">
+                    <div className="text-right text-[11px] text-muted">
                       <div>{ago(a.occurred_at, now)}</div>
                       <div className="font-mono">{a.service}</div>
                     </div>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
                     <span
-                      className={`text-[11px] ${a.status === "OPEN" ? "text-red-300" : a.status === "ACKNOWLEDGED" ? "text-amber-300" : "text-emerald-300"}`}
+                      className={`text-[11px] ${a.status === "OPEN" ? "text-rose-600 dark:text-rose-300" : a.status === "ACKNOWLEDGED" ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300"}`}
                     >
                       ● {a.status.toLowerCase()}
                       {a.acked_by && a.status !== "OPEN" && ` by ${a.resolved_by ?? a.acked_by}`}
@@ -172,7 +174,7 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
                           onChange={(e) => setNotes({ ...notes, [a.id]: e.target.value })}
                           placeholder="note (optional)"
                           maxLength={500}
-                          className="h-7 w-40 rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                          className="h-7 w-40 rounded border border-line bg-surface px-2 text-xs text-ink focus:border-accent focus:outline-none"
                         />
                         {a.status === "OPEN" && (
                           <button type="button" disabled={busy === a.id} onClick={() => transition(a, "ack")} className="btn-ghost !py-0.5 !text-xs">
@@ -184,10 +186,10 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
                         </button>
                       </>
                     )}
-                    {a.note && <span className="text-[11px] italic text-slate-500">“{a.note}”</span>}
+                    {a.note && <span className="text-[11px] italic text-muted">“{a.note}”</span>}
                   </div>
                   {expanded && (
-                    <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-slate-950 p-3 text-[11px] leading-relaxed text-slate-400">
+                    <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-surface p-3 text-[11px] leading-relaxed text-muted">
                       {JSON.stringify({ reason: a.reason, action: a.action, kind: a.kind, ...a.details }, null, 2)}
                     </pre>
                   )}
@@ -195,28 +197,28 @@ export function SecurityView({ stream }: { stream: SecurityStream }) {
               );
             })}
             {rows.length === 0 && (
-              <li className="py-10 text-center text-sm text-slate-500">
+              <li className="py-10 text-center text-sm text-muted">
                 No {status ? status.toLowerCase() : ""} events{family ? ` in ${family}` : ""}. Trigger one from the Interactive Sandbox ↓
               </li>
             )}
           </ul>
         </Panel>
 
-        <Panel title="Audit log" subtitle="Privileged actions taken through the dashboard">
+        <Panel icon={ClipboardList} title="Audit log" subtitle="Privileged actions taken through the dashboard">
           <ul className="max-h-[700px] space-y-2 overflow-auto text-xs">
             {audit.map((e) => (
-              <li key={e.id} className="rounded-md border border-slate-800 bg-slate-900/50 px-3 py-2">
+              <li key={e.id} className="rounded-md border border-line bg-surface px-3 py-2">
                 <div className="flex justify-between gap-2">
-                  <span className="font-mono text-sky-300">{e.action}</span>
-                  <span className="text-slate-500">{ago(e.at, now)}</span>
+                  <span className="font-mono text-sky-700 dark:text-sky-300">{e.action}</span>
+                  <span className="text-muted">{ago(e.at, now)}</span>
                 </div>
-                <div className="mt-0.5 text-slate-300">{e.target}</div>
-                <div className="text-slate-500">
+                <div className="mt-0.5 text-ink-2">{e.target}</div>
+                <div className="text-muted">
                   {e.actor.replace(/ <.*>$/, "")} · {e.role.replace("_", " ")}
                 </div>
               </li>
             ))}
-            {audit.length === 0 && <li className="text-slate-500">No audited actions yet.</li>}
+            {audit.length === 0 && <li className="text-muted">No audited actions yet.</li>}
           </ul>
         </Panel>
       </div>

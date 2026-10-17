@@ -69,7 +69,7 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
 
-  const input = "rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200 focus:border-sky-500 focus:outline-none";
+  const input = "rounded-md border border-line bg-surface px-2 py-1 text-sm text-ink focus:border-accent focus:outline-none";
 
   return (
     <div className="flex min-h-0 flex-col">
@@ -95,22 +95,22 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
             </option>
           ))}
         </select>
-        <label className="flex cursor-pointer items-center gap-1.5 text-sm text-slate-300">
+        <label className="flex cursor-pointer items-center gap-1.5 text-sm text-ink-2">
           <input type="checkbox" checked={alertsOnly} onChange={(e) => setAlertsOnly(e.target.checked)} className="accent-red-500" />
           Overweight only
         </label>
-        <span className="ml-auto text-xs text-slate-500">
+        <span className="ml-auto text-xs text-muted">
           {rows.length} of {ulds.length} ULDs
         </span>
       </div>
 
-      <div className="max-h-[520px] overflow-auto rounded-lg border border-slate-800">
+      <div className="max-h-[520px] overflow-auto rounded-lg border border-line">
         <table className="w-full min-w-[760px] text-sm">
-          <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur">
-            <tr className="text-left text-xs uppercase tracking-wider text-slate-500">
+          <thead className="sticky top-0 z-10 bg-surface-2/95 backdrop-blur">
+            <tr className="text-left text-xs uppercase tracking-wider text-muted">
               {columns.map((c) => (
                 <th key={c.key} className={`px-3 py-2 font-medium ${c.className ?? ""}`}>
-                  <button type="button" onClick={() => toggleSort(c.key)} className="hover:text-slate-300">
+                  <button type="button" onClick={() => toggleSort(c.key)} className="hover:text-ink">
                     {c.label}
                     {sort.key === c.key && <span className="ml-1">{sort.dir === 1 ? "▲" : "▼"}</span>}
                   </button>
@@ -118,7 +118,7 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/80">
+          <tbody className="divide-y divide-line">
             {rows.map((u) => {
               const isSel = selected === u.id;
               return (
@@ -127,27 +127,27 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
                   ref={isSel ? selectedRef : undefined}
                   onClick={() => onSelect(isSel ? null : u.id)}
                   className={`cursor-pointer transition-colors ${
-                    u.overweight ? "bg-red-500/10 hover:bg-red-500/15" : "hover:bg-slate-800/50"
-                  } ${isSel ? "outline outline-1 -outline-offset-1 outline-sky-400" : ""}`}
+                    u.overweight ? "bg-rose-50/70 hover:bg-rose-50 dark:bg-rose-500/10 dark:hover:bg-rose-500/15" : "hover:bg-surface-2/70"
+                  } ${isSel ? "outline outline-1 -outline-offset-1 outline-accent" : ""}`}
                 >
-                  <td className="px-3 py-2 font-mono text-slate-100">
+                  <td className="px-3 py-2 font-mono text-ink">
                     <span className="flex items-center gap-2">
                       {u.overweight && (
-                        <span className="text-red-400" title="Exceeds weight limit">
+                        <span className="text-rose-600 dark:text-rose-400" title="Exceeds weight limit">
                           ⚠
                         </span>
                       )}
                       {u.id}
-                      <span className="text-[10px] text-slate-500">{u.uld_type}</span>
+                      <span className="text-[10px] text-muted">{u.uld_type}</span>
                     </span>
                   </td>
-                  <td className="px-3 py-2 font-mono text-slate-300">{u.flight_number || "—"}</td>
+                  <td className="px-3 py-2 font-mono text-ink-2">{u.flight_number || "—"}</td>
                   <td className="px-3 py-2">
                     <StatusBadge status={u.status} />
                   </td>
-                  <td className="px-3 py-2 font-mono text-slate-400">
+                  <td className="px-3 py-2 font-mono text-muted">
                     {u.status === "IN_FLIGHT" ? (
-                      <span className="text-violet-300" title={u.eta ? `ETA ${new Date(u.eta).toLocaleTimeString("en-GB")}` : ""}>
+                      <span className="text-violet-700 dark:text-violet-300" title={u.eta ? `ETA ${new Date(u.eta).toLocaleTimeString("en-GB")}` : ""}>
                         ✈ {u.origin}→{u.destination}
                       </span>
                     ) : (
@@ -158,16 +158,16 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
                   <td
                     key={u.version}
                     className={`flash px-3 py-2 text-right font-mono tabular-nums ${
-                      u.overweight ? "font-semibold text-red-300" : "text-slate-200"
+                      u.overweight ? "font-semibold text-rose-600 dark:text-rose-300" : "text-ink"
                     }`}
                   >
                     {kg(u.weight_kg)}
                   </td>
                   <td className="px-3 py-2">
                     <WeightBar weight={u.weight_kg} limit={u.weight_limit_kg} />
-                    <div className="mt-0.5 text-[10px] text-slate-500">limit {kg(u.weight_limit_kg)}</div>
+                    <div className="mt-0.5 text-[10px] text-muted">limit {kg(u.weight_limit_kg)}</div>
                   </td>
-                  <td className="px-3 py-2 text-xs text-slate-400" title={u.last_scanner_id}>
+                  <td className="px-3 py-2 text-xs text-muted" title={u.last_scanner_id}>
                     {ago(u.last_scan_at, now)}
                   </td>
                 </tr>
@@ -175,7 +175,7 @@ export function UldTable({ ulds, flights, selected, onSelect }: Props) {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={columns.length} className="px-3 py-10 text-center text-slate-500">
+                <td colSpan={columns.length} className="px-3 py-10 text-center text-muted">
                   {ulds.length === 0 ? "Waiting for telemetry…" : "No ULDs match the current filters."}
                 </td>
               </tr>

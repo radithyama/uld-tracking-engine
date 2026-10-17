@@ -18,11 +18,12 @@ const W = 900;
 const PAD = 46;
 const BAND_H = 92;
 
+// Semi-transparent fills read well on both light and dark surfaces.
 function fillColor(pct: number) {
-  if (pct > 100) return { fill: "rgb(239 68 68 / 0.35)", stroke: "rgb(248 113 113)" };
-  if (pct >= 90) return { fill: "rgb(245 158 11 / 0.28)", stroke: "rgb(251 191 36)" };
-  if (pct >= 60) return { fill: "rgb(16 185 129 / 0.25)", stroke: "rgb(52 211 153)" };
-  return { fill: "rgb(56 189 248 / 0.18)", stroke: "rgb(125 211 252)" };
+  if (pct > 100) return { fill: "rgb(244 63 94 / 0.18)", stroke: "rgb(225 29 72)" }; // rose
+  if (pct >= 90) return { fill: "rgb(245 158 11 / 0.2)", stroke: "rgb(217 119 6)" }; // amber
+  if (pct >= 60) return { fill: "rgb(16 185 129 / 0.16)", stroke: "rgb(5 150 105)" }; // emerald
+  return { fill: "rgb(14 165 233 / 0.14)", stroke: "rgb(2 132 199)" }; // sky
 }
 
 /**
@@ -56,18 +57,18 @@ export function AircraftDeck({ positions, ulds, assignment, changed, selected, c
         const ps = positions.filter((p) => p.deck === deck);
         return (
           <g key={deck}>
-            <text x={PAD} y={top - 8} className="fill-slate-500 text-[11px] font-semibold tracking-widest">
+            <text x={PAD} y={top - 8} className="fill-muted text-[11px] font-semibold tracking-widest">
               {deck === "MAIN" ? "MAIN DECK" : "LOWER DECK"}
             </text>
             {/* fuselage */}
             <path
               d={`M ${PAD - 30} ${cy} Q ${PAD - 24} ${top} ${PAD + 10} ${top} L ${W - PAD + 6} ${top} Q ${W - PAD + 26} ${top + 6} ${W - PAD + 30} ${cy} Q ${W - PAD + 26} ${top + BAND_H - 6} ${W - PAD + 6} ${top + BAND_H} L ${PAD + 10} ${top + BAND_H} Q ${PAD - 24} ${top + BAND_H} ${PAD - 30} ${cy} Z`}
-              className="fill-slate-900 stroke-slate-700"
+              className="fill-surface-2 stroke-line-strong"
               strokeWidth={1.5}
             />
             {/* CG envelope, target and current CG */}
-            <rect x={x(envelope[0])} y={top + 2} width={x(envelope[1]) - x(envelope[0])} height={BAND_H - 4} className="fill-sky-500/5" />
-            <line x1={x(targetArm)} x2={x(targetArm)} y1={top} y2={top + BAND_H} className="stroke-sky-400/60" strokeDasharray="4 4" />
+            <rect x={x(envelope[0])} y={top + 2} width={x(envelope[1]) - x(envelope[0])} height={BAND_H - 4} className="fill-accent/5" />
+            <line x1={x(targetArm)} x2={x(targetArm)} y1={top} y2={top + BAND_H} className="stroke-accent/60" strokeDasharray="4 4" />
             {ps.map((p) => {
               const uldId = assignment[p.code];
               const u = uldId ? ulds[uldId] : undefined;
@@ -95,35 +96,35 @@ export function AircraftDeck({ positions, ulds, assignment, changed, selected, c
                     height={h}
                     rx={4}
                     fill={c ? c.fill : "transparent"}
-                    stroke={isSel ? "white" : c ? c.stroke : "rgb(71 85 105)"}
+                    stroke={isSel ? "var(--accent)" : c ? c.stroke : "rgb(148 163 184)"}
                     strokeWidth={isSel ? 2.5 : changed.has(p.code) ? 2 : 1}
                     strokeDasharray={u ? undefined : bulk ? "2 3" : "4 3"}
                   />
                   {changed.has(p.code) && (
-                    <circle cx={x(p.arm_m) + w / 2 - 4} cy={y + 4} r={3} className="fill-sky-400" />
+                    <circle cx={x(p.arm_m) + w / 2 - 4} cy={y + 4} r={3} className="fill-accent" />
                   )}
-                  <text x={x(p.arm_m)} y={y + 11} textAnchor="middle" className="pointer-events-none fill-slate-400 text-[9px]">
+                  <text x={x(p.arm_m)} y={y + 11} textAnchor="middle" className="pointer-events-none fill-muted text-[9px]">
                     {bulk ? "BULK" : p.code}
                   </text>
                   {u && h > 26 && (
                     <>
-                      <text x={x(p.arm_m)} y={y + h / 2 + 4} textAnchor="middle" className="pointer-events-none fill-slate-100 text-[9px] font-mono">
+                      <text x={x(p.arm_m)} y={y + h / 2 + 4} textAnchor="middle" className="pointer-events-none fill-ink text-[9px] font-mono font-semibold">
                         {u.id.slice(3, 8)}
                       </text>
-                      <text x={x(p.arm_m)} y={y + h - 5} textAnchor="middle" className="pointer-events-none fill-slate-300 text-[9px]">
+                      <text x={x(p.arm_m)} y={y + h - 5} textAnchor="middle" className="pointer-events-none fill-ink-2 text-[9px]">
                         {(u.weight_kg / 1000).toFixed(1)}t
                       </text>
                     </>
                   )}
                   {u && h <= 26 && (
-                    <text x={x(p.arm_m)} y={y + h - 4} textAnchor="middle" className="pointer-events-none fill-slate-200 text-[9px]">
+                    <text x={x(p.arm_m)} y={y + h - 4} textAnchor="middle" className="pointer-events-none fill-ink text-[9px]">
                       {(u.weight_kg / 1000).toFixed(1)}t
                     </text>
                   )}
                 </g>
               );
             })}
-            <line x1={x(cgArm)} x2={x(cgArm)} y1={top - 3} y2={top + BAND_H + 3} className="stroke-white" strokeWidth={2} />
+            <line x1={x(cgArm)} x2={x(cgArm)} y1={top - 3} y2={top + BAND_H + 3} className="stroke-ink" strokeWidth={2} />
           </g>
         );
       })}
@@ -131,13 +132,13 @@ export function AircraftDeck({ positions, ulds, assignment, changed, selected, c
       <g>
         {Array.from({ length: Math.floor(hi / 5) - Math.ceil(lo / 5) + 1 }, (_, i) => (Math.ceil(lo / 5) + i) * 5).map((m) => (
           <g key={m}>
-            <line x1={x(m)} x2={x(m)} y1={H - 26} y2={H - 21} className="stroke-slate-600" />
-            <text x={x(m)} y={H - 10} textAnchor="middle" className="fill-slate-500 text-[9px]">
+            <line x1={x(m)} x2={x(m)} y1={H - 26} y2={H - 21} className="stroke-line-strong" />
+            <text x={x(m)} y={H - 10} textAnchor="middle" className="fill-muted text-[9px]">
               {m} m
             </text>
           </g>
         ))}
-        <text x={PAD - 30} y={H - 10} className="fill-slate-500 text-[9px]">
+        <text x={PAD - 30} y={H - 10} className="fill-muted text-[9px] font-semibold">
           NOSE
         </text>
       </g>
@@ -153,21 +154,21 @@ export function CGGauge({ fwd, aft, target, current, proposed }: { fwd: number; 
   const inEnv = (v: number) => v >= fwd && v <= aft;
   return (
     <div>
-      <div className="relative h-7 rounded-md bg-slate-800">
-        <div className="absolute inset-y-0 rounded-md bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/30" style={{ left: pos(fwd), width: `calc(${pos(aft)} - ${pos(fwd)})` }} />
-        <div className="absolute inset-y-0 w-px bg-sky-400" style={{ left: pos(target) }} title={`target ${target}% MAC`} />
+      <div className="relative h-7 rounded-md bg-surface-2 ring-1 ring-inset ring-line">
+        <div className="absolute inset-y-0 rounded-md bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/40" style={{ left: pos(fwd), width: `calc(${pos(aft)} - ${pos(fwd)})` }} />
+        <div className="absolute inset-y-0 w-px bg-accent" style={{ left: pos(target) }} title={`target ${target}% MAC`} />
         <div
-          className={`absolute top-0 h-7 w-1 -translate-x-1/2 rounded ${inEnv(current) ? "bg-white" : "bg-red-400"} ${proposed !== undefined ? "opacity-40" : ""}`}
+          className={`absolute top-0 h-7 w-1 -translate-x-1/2 rounded ${inEnv(current) ? "bg-ink" : "bg-rose-500"} ${proposed !== undefined ? "opacity-40" : ""}`}
           style={{ left: pos(current) }}
           title={`current ${current.toFixed(1)}% MAC`}
         />
         {proposed !== undefined && (
-          <div className={`absolute top-0 h-7 w-1 -translate-x-1/2 rounded ${inEnv(proposed) ? "bg-sky-300" : "bg-red-400"}`} style={{ left: pos(proposed) }} />
+          <div className={`absolute top-0 h-7 w-1 -translate-x-1/2 rounded ${inEnv(proposed) ? "bg-accent" : "bg-rose-500"}`} style={{ left: pos(proposed) }} />
         )}
       </div>
-      <div className="mt-1 flex justify-between text-[10px] tabular-nums text-slate-500">
+      <div className="mt-1 flex justify-between text-[10px] tabular-nums text-muted">
         <span>FWD {fwd}%</span>
-        <span className="text-sky-400">target {target}%</span>
+        <span className="text-accent">target {target}%</span>
         <span>AFT {aft}%</span>
       </div>
     </div>

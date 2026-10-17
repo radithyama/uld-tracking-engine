@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Boxes, ClipboardList, PackageCheck, PlaneLanding, Scale, ScanLine, TriangleAlert, Warehouse, Weight } from "lucide-react";
 import type { FlightLoad, ULD, WarehouseLocation } from "@/lib/types";
-import { tonnes } from "@/lib/format";
 import { WarehouseGrid } from "./WarehouseGrid";
 import { UldTable } from "./UldTable";
 import { FlightLoads } from "./FlightLoads";
@@ -43,42 +43,42 @@ export function OperationsView({ station, ulds, locations, flights, manifest, on
     }
     return c;
   }, [here]);
+  const occupied = useMemo(() => new Set(here.map((u) => u.location_id)).size, [here]);
   const alertCount = overweight.length + overPayload.length;
 
   return (
     <div className="space-y-5">
       {alertCount > 0 && (
-        <div className="flex items-center gap-3 rounded-lg border border-red-500/60 bg-red-500/15 px-4 py-2.5 text-sm text-red-100">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
-          </span>
-          <strong>
-            {alertCount} weight alert{alertCount === 1 ? "" : "s"} at {station}:
-          </strong>
-          <span className="text-red-200/90">
-            {overweight.length} ULD{overweight.length === 1 ? "" : "s"} over limit
-            {overPayload.length > 0 && `, ${overPayload.length} departure${overPayload.length === 1 ? "" : "s"} over max payload`}
+        <div className="flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-xs dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200">
+          <TriangleAlert size={18} className="shrink-0 text-rose-600 dark:text-rose-300" />
+          <span>
+            <strong className="font-semibold">
+              {alertCount} weight alert{alertCount === 1 ? "" : "s"} at {station}
+            </strong>
+            <span className="text-rose-700/80 dark:text-rose-300/80">
+              {" "}· {overweight.length} ULD{overweight.length === 1 ? "" : "s"} over limit
+              {overPayload.length > 0 && `, ${overPayload.length} departure${overPayload.length === 1 ? "" : "s"} over max payload`}
+            </span>
           </span>
         </div>
       )}
 
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Kpi label={`ULDs at ${station}`} value={here.length} />
-        <Kpi label="In Transit" value={counts.IN_TRANSIT} accent="text-sky-300" />
-        <Kpi label="Staged" value={counts.STAGED} accent="text-amber-300" />
-        <Kpi label="Loaded" value={counts.LOADED} accent="text-emerald-300" />
-        <Kpi label="Inbound (air)" value={inbound.length} accent="text-violet-300" />
-        <Kpi label="Gross on floor" value={tonnes(counts.weight)} />
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" aria-label={`${station} metrics`}>
+        <Kpi label={`ULDs at ${station}`} value={here.length} unit="units" icon={Boxes} hint={`${occupied}/${floor.length} bays occupied`} progress={floor.length ? occupied / floor.length : 0} />
+        <Kpi label="In transit" value={counts.IN_TRANSIT} unit="ULDs" icon={ScanLine} tone="sky" />
+        <Kpi label="Staged" value={counts.STAGED} unit="ULDs" icon={ClipboardList} tone="amber" />
+        <Kpi label="Loaded" value={counts.LOADED} unit="ULDs" icon={PackageCheck} tone="emerald" />
+        <Kpi label="Inbound by air" value={inbound.length} unit="ULDs" icon={PlaneLanding} tone="violet" />
+        <Kpi label="Gross on floor" value={(counts.weight / 1000).toFixed(1)} unit="t" icon={Weight} hint={alertCount ? `${overweight.length} over limit` : "all within limits"} tone={alertCount ? "rose" : "slate"} />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
         <div className="min-w-0 space-y-5">
-          <Panel title={`Warehouse floor · ${station}`} subtitle="Live ULD positions by scan location">
+          <Panel title={`Warehouse floor · ${station}`} subtitle="Live ULD positions by scan location · click a container to highlight it" icon={Warehouse}>
             <WarehouseGrid locations={floor} ulds={here} selected={selected} onSelect={setSelected} />
           </Panel>
           {manifest && (
-            <Panel title="ULD manifest" subtitle={`On the floor at ${station}, plus ULDs inbound by air`}>
+            <Panel title="ULD manifest" subtitle={`On the floor at ${station}, plus ULDs inbound by air`} icon={ClipboardList}>
               <UldTable
                 ulds={[...here, ...inbound]}
                 flights={[...new Set([...here, ...inbound].map((u) => u.flight_number).filter(Boolean))].sort()}
@@ -89,11 +89,11 @@ export function OperationsView({ station, ulds, locations, flights, manifest, on
           )}
         </div>
         <aside className="space-y-5">
-          <Panel title="Weight alerts">
+          <Panel title="Weight alerts" icon={TriangleAlert}>
             <AlertsPanel overweight={overweight} overPayload={overPayload} onSelect={setSelected} />
           </Panel>
           {manifest && (
-            <Panel title="Departures load" subtitle={onOpenFlight ? "Click to open the aircraft deck" : "Assigned ULD weight vs max payload"}>
+            <Panel title="Departures" subtitle={onOpenFlight ? "Click a flight to open its aircraft hold" : "Assigned weight vs max payload"} icon={Scale}>
               <FlightLoads flights={departures} onSelect={onOpenFlight} />
             </Panel>
           )}

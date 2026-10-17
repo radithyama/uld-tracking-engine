@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { PlaneLanding, PlaneTakeoff } from "lucide-react";
 import type { FlightLoad, ULD } from "@/lib/types";
 import { timeHM, tonnes, useNow } from "@/lib/format";
 import { countdown, progress } from "@/lib/time";
@@ -40,12 +41,12 @@ export function FlightsView({ station, flights, ulds, timeScale, onOpen }: Props
     return m;
   }, [ulds]);
 
-  const th = "px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-slate-500";
+  const th = "px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted";
   const td = "px-3 py-2.5";
 
   return (
     <div className="grid gap-5 xl:grid-cols-2">
-      <Panel title={`Departures · ${station}`} subtitle="Click a flight to open its load plan and CG optimizer">
+      <Panel icon={PlaneTakeoff} title={`Departures · ${station}`} subtitle="Click a flight to open its load plan and CG optimizer">
         <table className="w-full text-sm">
           <thead>
             <tr>
@@ -57,33 +58,33 @@ export function FlightsView({ station, flights, ulds, timeScale, onOpen }: Props
               <th className={`${th} text-right`}>Load</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/80">
+          <tbody className="divide-y divide-line">
             {departures.map((f) => {
               const r = readyByFlight[f.id] ?? { staged: 0, loaded: 0, building: 0 };
               const pct = (f.total_weight_kg / f.max_payload_kg) * 100;
               return (
-                <tr key={f.id} onClick={() => onOpen(f)} className="cursor-pointer hover:bg-slate-800/50">
-                  <td className={`${td} font-mono font-semibold text-slate-100`}>
+                <tr key={f.id} onClick={() => onOpen(f)} className="cursor-pointer hover:bg-surface-2/70">
+                  <td className={`${td} font-mono font-semibold text-ink`}>
                     {f.flight_number}
-                    <div className="text-[10px] font-normal text-slate-500">{f.aircraft_type}</div>
+                    <div className="text-[10px] font-normal text-muted">{f.aircraft_type}</div>
                   </td>
-                  <td className={`${td} font-mono text-slate-300`}>{f.destination}</td>
-                  <td className={`${td} tabular-nums text-slate-300`}>{timeHM(f.departure)}</td>
-                  <td className={`${td} tabular-nums text-sky-300`}>{countdown(f.departure, now)}</td>
-                  <td className={`${td} text-xs text-slate-400`}>
-                    <span className="text-emerald-300">{r.loaded} loaded</span> · <span className="text-amber-300">{r.staged} staged</span>
+                  <td className={`${td} font-mono text-ink-2`}>{f.destination}</td>
+                  <td className={`${td} tabular-nums text-ink-2`}>{timeHM(f.departure)}</td>
+                  <td className={`${td} tabular-nums text-sky-700 dark:text-sky-300`}>{countdown(f.departure, now)}</td>
+                  <td className={`${td} text-xs text-muted`}>
+                    <span className="text-emerald-700 dark:text-emerald-300">{r.loaded} loaded</span> · <span className="text-amber-700 dark:text-amber-300">{r.staged} staged</span>
                     {r.building > 0 && <> · {r.building} building</>}
                   </td>
-                  <td className={`${td} text-right tabular-nums ${f.over_payload ? "font-semibold text-red-300" : "text-slate-300"}`}>
-                    {tonnes(f.total_weight_kg)} <span className="text-slate-500">({pct.toFixed(0)}%)</span>
-                    {f.overweight_ulds > 0 && <div className="text-[10px] text-red-400">{f.overweight_ulds} ULD over limit</div>}
+                  <td className={`${td} text-right tabular-nums ${f.over_payload ? "font-semibold text-rose-600 dark:text-rose-300" : "text-ink-2"}`}>
+                    {tonnes(f.total_weight_kg)} <span className="text-muted">({pct.toFixed(0)}%)</span>
+                    {f.overweight_ulds > 0 && <div className="text-[10px] text-rose-600 dark:text-rose-400">{f.overweight_ulds} ULD over limit</div>}
                   </td>
                 </tr>
               );
             })}
             {departures.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-3 py-8 text-center text-muted">
                   No scheduled departures from {station}.
                 </td>
               </tr>
@@ -92,7 +93,7 @@ export function FlightsView({ station, flights, ulds, timeScale, onOpen }: Props
         </table>
       </Panel>
 
-      <Panel title={`Arrivals · ${station}`} subtitle={`Network clock ×${timeScale}: flights are time-compressed for the demo`}>
+      <Panel icon={PlaneLanding} title={`Arrivals · ${station}`} subtitle={`Network clock ×${timeScale}: flights are time-compressed for the demo`}>
         <table className="w-full text-sm">
           <thead>
             <tr>
@@ -103,33 +104,33 @@ export function FlightsView({ station, flights, ulds, timeScale, onOpen }: Props
               <th className={th}>ULDs</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/80">
+          <tbody className="divide-y divide-line">
             {arrivals.map((f) => (
-              <tr key={f.id} onClick={() => onOpen(f)} className="cursor-pointer hover:bg-slate-800/50">
-                <td className={`${td} font-mono font-semibold text-slate-100`}>{f.flight_number}</td>
-                <td className={`${td} font-mono text-slate-300`}>{f.origin}</td>
+              <tr key={f.id} onClick={() => onOpen(f)} className="cursor-pointer hover:bg-surface-2/70">
+                <td className={`${td} font-mono font-semibold text-ink`}>{f.flight_number}</td>
+                <td className={`${td} font-mono text-ink-2`}>{f.origin}</td>
                 <td className={td}>
                   {f.status === "DEPARTED" ? (
                     <div>
-                      <span className="text-xs text-violet-300">✈ airborne</span>
-                      <div className="mt-1 h-1 w-24 overflow-hidden rounded bg-slate-800">
-                        <div className="h-full bg-violet-400" style={{ width: `${progress(f.departed_at, f.eta, now) * 100}%` }} />
+                      <span className="text-xs text-violet-700 dark:text-violet-300">✈ airborne</span>
+                      <div className="mt-1 h-1 w-24 overflow-hidden rounded bg-surface-2">
+                        <div className="h-full bg-violet-500" style={{ width: `${progress(f.departed_at, f.eta, now) * 100}%` }} />
                       </div>
                     </div>
                   ) : (
-                    <span className="text-xs text-emerald-300">landed {f.arrived_at ? timeHM(f.arrived_at) : ""}</span>
+                    <span className="text-xs text-emerald-700 dark:text-emerald-300">landed {f.arrived_at ? timeHM(f.arrived_at) : ""}</span>
                   )}
                 </td>
-                <td className={`${td} tabular-nums text-slate-300`}>
+                <td className={`${td} tabular-nums text-ink-2`}>
                   {f.eta ? timeHM(f.eta) : "—"}
-                  {f.status === "DEPARTED" && <div className="text-[10px] text-sky-300">{countdown(f.eta, now)}</div>}
+                  {f.status === "DEPARTED" && <div className="text-[10px] text-sky-700 dark:text-sky-300">{countdown(f.eta, now)}</div>}
                 </td>
-                <td className={`${td} tabular-nums text-slate-400`}>{f.uld_count}</td>
+                <td className={`${td} tabular-nums text-muted`}>{f.uld_count}</td>
               </tr>
             ))}
             {arrivals.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-3 py-8 text-center text-slate-500">
+                <td colSpan={5} className="px-3 py-8 text-center text-muted">
                   Nothing inbound to {station}.
                 </td>
               </tr>
