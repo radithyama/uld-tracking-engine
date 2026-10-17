@@ -26,6 +26,7 @@ export const BFF_POLICY: readonly Rule[] = [
   { path: /^\/bff\/sandbox\/scan$/, methods: ["POST"], need: "sandbox.scan" },
   { path: /^\/bff\/sandbox\/chaos$/, methods: ["POST"], need: "sandbox.chaos" },
   { path: /^\/bff\/sandbox\/traffic$/, methods: ["GET", "POST"], need: "sandbox.traffic" },
+  { path: /^\/bff\/sandbox\/generator$/, methods: ["GET", "POST"], need: "sandbox.generator" },
 ];
 
 export type Decision = { rule: Rule } | { status: 404 | 405 };

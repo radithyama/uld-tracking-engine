@@ -55,3 +55,24 @@ export async function sandboxTraffic(body: { action: "pause" | "resume" } | { ac
   const r = await post("/bff/sandbox/traffic", body);
   return { ok: r.ok, state: r.body as TrafficState, error: r.ok ? "" : errorOf(r.body, r.status) };
 }
+
+export interface GeneratorState {
+  enabled: boolean;
+  rate_per_sec?: number;
+  remaining_seconds?: number;
+  max_run_seconds?: number;
+}
+
+export async function getGenerator(): Promise<GeneratorState | null> {
+  try {
+    const res = await fetch("/bff/sandbox/generator", { cache: "no-store" });
+    return res.ok ? ((await res.json()) as GeneratorState) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setGenerator(enabled: boolean) {
+  const r = await post("/bff/sandbox/generator", { enabled });
+  return { ok: r.ok, state: r.body as unknown as GeneratorState, error: r.ok ? "" : errorOf(r.body, r.status) };
+}

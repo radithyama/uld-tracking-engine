@@ -70,14 +70,21 @@ func main() {
 	// ingest is unreachable, and nothing is dropped unless the buffer fills.
 	queue := make(chan []model.ScanEvent, config.Int("SIM_BUFFER_BATCHES", 200_000))
 
+	gen := &generator{
+		rate:   min(max(config.Int("SIM_GENERATOR_RATE", 8), 1), maxRate),
+		maxRun: config.Duration("SIM_GENERATOR_MAX_RUN", 15*time.Minute),
+	}
+	genRNG := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 7)) // #nosec G404 -- simulation only
+
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
+	go func() { defer wg.Done(); churn(ctx, log, st, gen, queue, genRNG, tick) }()
 	go func() { defer wg.Done(); w.sync(ctx, log, snapshotURL, 2*time.Second) }()
 	go func() { defer wg.Done(); generate(ctx, log, st, queue, fleet, w, rng, tick) }()
 	go func() { defer wg.Done(); send(ctx, log, st, client, url, apiKey, queue) }()
 	go func() {
 		defer wg.Done()
-		srv := &http.Server{Addr: config.String("SIM_CONTROL_ADDR", ":8090"), Handler: controlAPI(st, queue, runID),
+		srv := &http.Server{Addr: config.String("SIM_CONTROL_ADDR", ":8090"), Handler: controlAPI(st, gen, queue, runID),
 			ReadHeaderTimeout: 5 * time.Second}
 		if err := httpx.Serve(ctx, log, srv); err != nil {
 			// Fail fast: a second simulator that can't bind its control port
@@ -229,7 +236,9 @@ func post(ctx context.Context, c *http.Client, url, apiKey string, batch []model
 //	POST /pause   stop generating new scans (queue keeps draining)
 //	POST /resume
 //	POST /rate    {"rate": n}  set scans per second (1-200)
-func controlAPI(st *stats, queue chan []model.ScanEvent, runID string) http.Handler {
+//	GET  /generator            traffic generator state
+//	POST /generator {"enabled": bool}  switch it on (for SIM_GENERATOR_MAX_RUN) or off
+func controlAPI(st *stats, gen *generator, queue chan []model.ScanEvent, runID string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -280,6 +289,21 @@ func controlAPI(st *stats, queue chan []model.ScanEvent, runID string) http.Hand
 		}
 		st.rate.Store(int64(req.Rate))
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"rate_per_sec": req.Rate})
+	})
+	mux.HandleFunc("GET /generator", func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteJSON(w, http.StatusOK, gen.state(time.Now()))
+	})
+	mux.HandleFunc("POST /generator", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil || req.Enabled == nil {
+			httpx.WriteError(w, http.StatusBadRequest, `body must be {"enabled": true|false}`, nil)
+			return
+		}
+		now := time.Now()
+		gen.set(*req.Enabled, now)
+		httpx.WriteJSON(w, http.StatusOK, gen.state(now))
 	})
 	return mux
 }

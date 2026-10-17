@@ -19,6 +19,7 @@ import { SecurityView, severityStyle } from "@/components/SecurityView";
 import { SandboxToolbar } from "@/components/SandboxToolbar";
 import { DeckModal } from "@/components/DeckModal";
 import { DashboardSkeleton } from "@/components/Panel";
+import { TrafficGenerator } from "@/components/TrafficGenerator";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8081/ws";
 
@@ -164,7 +165,10 @@ function ControlRoom({ role, name, demoSession }: { role: Role; name: string; de
               {View.label}
             </h1>
           </div>
-          <p className="max-w-md text-right text-xs text-muted">{View.blurb}</p>
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <p className="hidden max-w-xs text-right text-xs text-muted xl:block">{View.blurb}</p>
+            {can(role, "sandbox.generator") && <TrafficGenerator />}
+          </div>
         </div>
 
         {stream.status === "reconnecting" && hasData && (

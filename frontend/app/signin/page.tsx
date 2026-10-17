@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { getProviders, signIn } from "next-auth/react";
 import { ArrowRight, Scale, ShieldCheck, Truck, type LucideIcon } from "lucide-react";
 import { ROLE_INFO, ROLES, type Role } from "@/lib/roles";
-import { BrandMark, Logo, ThemeToggle } from "@/components/Navbar";
+import { ThemeToggle } from "@/components/Navbar";
 
 const PERSONA: Record<Role, { icon: LucideIcon; tone: string; ring: string; points: string[] }> = {
   ground_handler: {
@@ -47,14 +47,14 @@ export default function SignInPage() {
   return (
     <main className="relative min-h-screen bg-canvas">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-gradient-to-b from-blue-50 to-transparent dark:from-blue-500/10" />
-      <div className="relative mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
-        <Logo />
+      <div className="absolute right-5 top-5 z-10">
         <ThemeToggle />
       </div>
 
-      <div className="relative mx-auto grid max-w-6xl gap-10 px-5 pb-16 pt-6 lg:grid-cols-[1fr_1.15fr] lg:pt-14">
+      {/* Both columns start on the same line: the "Live demo" pill sits level
+          with "Choose a demo persona". */}
+      <div className="relative mx-auto grid min-h-screen max-w-6xl content-center items-start gap-10 px-5 py-16 lg:grid-cols-[1fr_1.15fr]">
         <section className="fade-in">
-          <BrandMark size={76} className="mb-6 rounded-2xl" />
           <span className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-xs font-medium text-ink-2 shadow-xs">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Live demo · streaming telemetry
           </span>

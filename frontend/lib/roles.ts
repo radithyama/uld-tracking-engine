@@ -16,7 +16,8 @@ export type Capability =
   | "security.view" // live SOC stream, alert triage, audit log
   | "sandbox.scan"
   | "sandbox.chaos" // tamper / impossible travel / unauthorized scan
-  | "sandbox.traffic";
+  | "sandbox.traffic"
+  | "sandbox.generator"; // demo traffic generator on/off (shared by all viewers)
 
 interface RoleInfo {
   label: string;
@@ -30,19 +31,19 @@ export const ROLE_INFO: Record<Role, RoleInfo> = {
     label: "Ground Handler",
     blurb: "Read-only warehouse map and the manual scanner tool.",
     tabs: ["operations", "network"],
-    can: ["sandbox.scan"],
+    can: ["sandbox.scan", "sandbox.generator"],
   },
   loadmaster: {
     label: "Loadmaster",
     blurb: "Flight manifests, load planning & CG optimization, weight overrides.",
     tabs: ["operations", "flights", "network"],
-    can: ["view.manifest", "loadplan.view", "loadplan.edit", "sandbox.scan", "sandbox.chaos", "sandbox.traffic"],
+    can: ["view.manifest", "loadplan.view", "loadplan.edit", "sandbox.scan", "sandbox.chaos", "sandbox.traffic", "sandbox.generator"],
   },
   security_auditor: {
     label: "Security Auditor",
     blurb: "Live SOC security stream, alert triage and the audit log.",
     tabs: ["operations", "flights", "network", "security"],
-    can: ["view.manifest", "loadplan.view", "security.view", "sandbox.chaos"],
+    can: ["view.manifest", "loadplan.view", "security.view", "sandbox.chaos", "sandbox.generator"],
   },
 };
 
