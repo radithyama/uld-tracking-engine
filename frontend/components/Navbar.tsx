@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { BookOpen, Menu, Moon, Sun } from "lucide-react";
 import type { ConnectionStatus, Station } from "@/lib/types";
 import { ROLE_INFO, type Role, type Tab } from "@/lib/roles";
@@ -29,7 +30,7 @@ const CONN: Record<ConnectionStatus, { label: string; cls: string; dot: string }
 export function LiveBadge({ status, rate }: { status: ConnectionStatus; rate: number }) {
   const c = CONN[status];
   return (
-    <span className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${c.cls}`}>
+    <span className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${c.cls}`}>
       <span className="relative flex h-2 w-2">
         {status === "open" && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />}
         <span className={`relative inline-flex h-2 w-2 rounded-full ${c.dot}`} />
@@ -65,15 +66,23 @@ export function ThemeToggle() {
   );
 }
 
+/** The ULDPulse brand mark. The navy parts sit on a white tile in dark mode to stay legible. */
+export function BrandMark({ size = 32, className = "" }: { size?: number; className?: string }) {
+  return (
+    <span
+      className={`grid shrink-0 place-items-center rounded-lg dark:bg-white dark:shadow-sm dark:ring-1 dark:ring-white/20 ${className}`}
+      style={{ width: size, height: size }}
+    >
+      <Image src="/brand/uldpulse-mark.png" alt="" width={size} height={size} className="h-[88%] w-[88%] object-contain" priority />
+    </span>
+  );
+}
+
 export function Logo() {
   return (
-    <div className="flex items-center gap-2">
-      <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-white shadow-sm">
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-          <path d="M3 12h3l2.5-6 4 12 3-9 2 3H21" />
-        </svg>
-      </span>
-      <div className="leading-tight">
+    <div className="flex shrink-0 items-center gap-2">
+      <BrandMark size={34} />
+      <div className="whitespace-nowrap leading-tight">
         <div className="text-sm font-semibold tracking-tight text-ink">ULDPulse</div>
         <div className="text-[10px] font-medium uppercase tracking-wider text-muted">Cargo Ops Control</div>
       </div>
@@ -139,7 +148,7 @@ export function Navbar({ stations, station, onStation, tabs, tab, onTab, role, n
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
           <label className="hidden items-center gap-2 md:flex">
             <span className="sr-only">Hub</span>
-            <select value={station} onChange={(e) => onStation(e.target.value)} className="field h-9 font-mono text-sm font-medium" aria-label="Hub">
+            <select value={station} onChange={(e) => onStation(e.target.value)} className="field h-9 max-w-52 truncate font-mono text-sm font-medium xl:max-w-none" aria-label="Hub">
               {stations.map((s) => (
                 <option key={s.iata} value={s.iata}>
                   {s.iata} · {s.name.replace(/ International$/, "")}
@@ -168,11 +177,12 @@ export function Navbar({ stations, station, onStation, tabs, tab, onTab, role, n
           <button
             type="button"
             onClick={onMenu}
-            className="hidden items-center gap-2 rounded-lg py-1 pl-1 pr-2 transition hover:bg-surface-2 sm:flex"
-            aria-label="Account and persona"
+            className="hidden items-center gap-2 rounded-lg p-1 transition hover:bg-surface-2 sm:flex xl:pr-2"
+            aria-label={`Account and persona · ${ROLE_INFO[role].label}`}
+            title={ROLE_INFO[role].label}
           >
             <span className="grid h-7 w-7 place-items-center rounded-full bg-surface-2 text-[11px] font-semibold text-ink-2 ring-1 ring-line">{initials}</span>
-            <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${ROLE_CHIP[role]}`}>{ROLE_INFO[role].label}</span>
+            <span className={`hidden whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset xl:inline ${ROLE_CHIP[role]}`}>{ROLE_INFO[role].label}</span>
           </button>
         </div>
       </div>

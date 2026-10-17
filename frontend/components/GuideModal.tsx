@@ -22,6 +22,7 @@ import {
 import { can, ROLE_INFO, ROLES, type Capability, type Role, type Tab } from "@/lib/roles";
 import { sandboxChaos, sandboxScan, type ActionResult } from "@/lib/sandboxClient";
 import type { ULD } from "@/lib/types";
+import { BrandMark } from "./Navbar";
 
 interface Props {
   open: boolean;
@@ -233,11 +234,14 @@ export function GuideModal({ open, onClose, role, demoSession, ulds, onTab, onOp
         className="fade-in relative flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl outline-none"
       >
         <header className="flex items-center justify-between border-b border-line px-5 py-3.5">
-          <div>
-            <h2 id="guide-title" className="text-base font-semibold text-ink">
-              How ULDPulse works
-            </h2>
-            <p className="text-xs text-muted">A 2-minute tour of the live demo. Everything you trigger runs through the real backend.</p>
+          <div className="flex items-center gap-3">
+            <BrandMark size={36} />
+            <div>
+              <h2 id="guide-title" className="text-base font-semibold text-ink">
+                How ULDPulse works
+              </h2>
+              <p className="text-xs text-muted">A 2-minute tour of the live demo. Everything you trigger runs through the real backend.</p>
+            </div>
           </div>
           <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close guide">
             <X size={18} />
@@ -246,7 +250,7 @@ export function GuideModal({ open, onClose, role, demoSession, ulds, onTab, onOp
 
         <div className="grid min-h-0 flex-1 overflow-y-auto md:grid-cols-[1fr_320px]">
           {/* Steps */}
-          <section className="flex min-h-0 flex-col p-5">
+          <section className="flex flex-col p-5">
             <ol className="mb-5 flex gap-1.5" aria-label="Tour steps">
               {STEPS.map((s, i) => (
                 <li key={s.title} className="flex-1">

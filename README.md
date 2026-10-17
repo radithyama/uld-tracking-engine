@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/uldpulse-logo.png" alt="ULDPulse logo" width="128"></p>
+
 # Real-Time ULD Tracking Engine
 
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)

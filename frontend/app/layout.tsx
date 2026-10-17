@@ -17,6 +17,8 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "ULDPulse · ULD Operations Control",
   description: "Real-time air cargo ULD tracking, load planning and SOC security telemetry",
+  applicationName: "ULDPulse",
+  appleWebApp: { title: "ULDPulse" },
 };
 
 export const viewport: Viewport = {
