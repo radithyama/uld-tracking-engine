@@ -33,13 +33,13 @@ func main() {
 	ctx, stop := logx.SignalContext()
 	defer stop()
 
-	workers := config.Int("PROCESSOR_WORKERS", 6)
+	workers := min(max(config.Int("PROCESSOR_WORKERS", 6), 1), 64) // also keeps the pool size in int32 range
 	det := detect.DefaultConfig()
 	det.MaxSpeedKmh = configFloat("DETECT_MAX_SPEED_KMH", det.MaxSpeedKmh)
 	det.SuspiciousMargin = configFloat("DETECT_WEIGHT_SUSPICIOUS_MARGIN", det.SuspiciousMargin)
 
 	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	pg, err := store.NewPostgres(startCtx, cfg.DatabaseURL, int32(workers*2+2))
+	pg, err := store.NewPostgres(startCtx, cfg.DatabaseURL, int32(workers*2+2)) // #nosec G115 -- workers is clamped to 1..64 above
 	if err != nil {
 		cancel()
 		logx.Fatal(log, "postgres connect", err)

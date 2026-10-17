@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime/debug"
 	"time"
@@ -73,8 +74,13 @@ func HandleHealthcheckCommand() {
 	if len(os.Args) < 3 || os.Args[1] != "healthcheck" {
 		return
 	}
+	// Probes only this container's own loopback listener.
+	u, err := url.Parse(os.Args[2])
+	if err != nil || u.Scheme != "http" || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") {
+		os.Exit(2)
+	}
 	c := &http.Client{Timeout: 3 * time.Second}
-	resp, err := c.Get(os.Args[2])
+	resp, err := c.Get(u.String()) // #nosec G704 -- loopback-only URL validated above
 	if err != nil {
 		os.Exit(1)
 	}

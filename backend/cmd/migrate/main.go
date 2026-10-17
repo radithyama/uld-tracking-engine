@@ -143,7 +143,7 @@ func connectWithRetry(ctx context.Context, url string) (*pgx.Conn, error) {
 			if err = conn.Ping(ctx); err == nil {
 				return conn, nil
 			}
-			conn.Close(ctx)
+			_ = conn.Close(ctx) // best effort; we retry with a new connection
 		}
 		lastErr = err
 		select {

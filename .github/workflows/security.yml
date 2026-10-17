@@ -77,7 +77,7 @@ jobs:
       # eslint-plugin-security + XSS rules (no-danger, no script: URLs, eval).
       - name: Security lint
         run: npx eslint . --max-warnings=0
-      - run: npx tsc --noEmit
+      # next build also type-checks (after generating Next's route types).
       - run: npm run build
 
   containers:
