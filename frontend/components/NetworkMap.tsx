@@ -1,8 +1,12 @@
 "use client";
 
-import { useMemo } from "react";
-import { Globe2, Plane } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { geoInterpolate } from "d3-geo";
+import type { GeoJsonObject } from "geojson";
+import { ComposableMap, Geographies, Geography, Graticule, Line, Marker, ZoomableGroup, useMapContext } from "react-simple-maps";
+import { Globe2, Minus, Plane, Plus, RotateCcw } from "lucide-react";
 import type { FlightLoad, Station, ULD } from "@/lib/types";
+import { lonLat } from "@/lib/airports";
 import { kg, timeHM, useNow } from "@/lib/format";
 import { countdown, progress } from "@/lib/time";
 import { Panel } from "./Panel";
@@ -16,39 +20,96 @@ interface Props {
   onStation: (iata: string) => void;
 }
 
-const W = 760;
-const H = 430;
-const LON: [number, number] = [96, 154];
-const LAT: [number, number] = [-43, 41];
-const px = (lon: number) => ((lon - LON[0]) / (LON[1] - LON[0])) * W;
-const py = (lat: number) => ((LAT[1] - lat) / (LAT[1] - LAT[0])) * H;
+type LonLat = [number, number];
 
-/** Quadratic arc between two points, bowed to one side. */
-function arc(a: Station, b: Station) {
-  const x1 = px(a.lon), y1 = py(a.lat), x2 = px(b.lon), y2 = py(b.lat);
-  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
-  const bow = Math.min(60, len * 0.18);
-  const cx = mx - (dy / len) * bow, cy = my + (dx / len) * bow;
-  const at = (t: number) => ({
-    x: (1 - t) ** 2 * x1 + 2 * (1 - t) * t * cx + t ** 2 * x2,
-    y: (1 - t) ** 2 * y1 + 2 * (1 - t) * t * cy + t ** 2 * y2,
-  });
-  const heading = (t: number) => {
-    const d = { x: 2 * (1 - t) * (cx - x1) + 2 * t * (x2 - cx), y: 2 * (1 - t) * (cy - y1) + 2 * t * (y2 - cy) };
-    return (Math.atan2(d.y, d.x) * 180) / Math.PI;
-  };
-  // Path of the part already flown (for the progress trail).
-  const flown = (t: number) => {
-    const p = at(t);
-    const qx = (1 - t) * x1 + t * cx, qy = (1 - t) * y1 + t * cy;
-    return `M ${x1} ${y1} Q ${qx} ${qy} ${p.x} ${p.y}`;
-  };
-  return { d: `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`, at, heading, flown };
+// Mercator framed on the network: Narita in the north to Melbourne in the
+// south, Jakarta/Singapore in the west to Sydney in the east.
+const MAP_W = 760;
+const MAP_H = 600;
+const HOME: { center: LonLat; zoom: number } = { center: [128, -1], zoom: 1 };
+const PROJECTION = { center: HOME.center, scale: 390 };
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 8;
+
+// No focus outline: countries are scenery, not controls.
+const GEO_STYLE = { outline: "none" };
+
+/** Countries TopoJSON (Natural Earth 1:50m), loaded as its own cached chunk. */
+function useWorld() {
+  const [world, setWorld] = useState<GeoJsonObject | null>(null);
+  useEffect(() => {
+    let alive = true;
+    import("world-atlas/countries-50m.json").then((m) => alive && setWorld(m.default as unknown as GeoJsonObject));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return world;
+}
+
+/** A flight on the map: great-circle trail, plane icon and label. */
+function FlightOnMap({ flight, from, to, t, now, scale, stagger }: {
+  flight: FlightLoad;
+  from: LonLat;
+  to: LonLat;
+  t: number;
+  now: number;
+  scale: number; // 1/zoom, keeps icons and labels a constant on-screen size
+  stagger: number;
+}) {
+  const { projection } = useMapContext();
+  const along = useMemo(() => geoInterpolate(from, to), [from, to]);
+  const pos = along(t) as LonLat;
+
+  // Heading on screen: direction from here to a point slightly further along
+  // the great circle, after projection (so it matches the drawn path).
+  const a = projection(along(Math.max(0, Math.min(t, 0.995)))) ?? [0, 0];
+  const b = projection(along(Math.min(1, Math.max(t, 0) + 0.005))) ?? [0, 0];
+  // Rounded: float math differs in the last digits between engines (server
+  // vs browser), and 0.1° is far below what's visible.
+  const heading = Math.round((Math.atan2(b[1] - a[1], b[0] - a[0]) * 1800) / Math.PI) / 10;
+
+  // Label beside the plane, perpendicular to its track (to the left of the
+  // direction of travel). That keeps it off the route line and, near either
+  // end, away from the airport's own label. Same-origin departures are
+  // staggered further out so they don't overprint.
+  const normal = ((heading - 90) * Math.PI) / 180;
+  const dist = 22 + stagger * 16;
+  const lx = Math.round(Math.cos(normal) * dist);
+  const ly = Math.round(Math.sin(normal) * dist);
+  const LABEL_W = 94;
+  const left = lx < 0;
+
+  return (
+    <g>
+      <Line from={from} to={to} fill="none" className="stroke-blue-400/60 dark:stroke-blue-400/30" strokeWidth={1.5 * scale} strokeDasharray={`${5 * scale} ${4 * scale}`} />
+      {t > 0 && <Line from={from} to={pos} fill="none" className="stroke-accent" strokeWidth={2.5 * scale} strokeLinecap="round" />}
+      <Marker coordinates={pos}>
+        <g transform={`scale(${scale})`}>
+          <title>
+            {`${flight.flight_number} ${flight.origin} → ${flight.destination}\n${Math.round(t * 100)}% flown · ${pos[1].toFixed(2)}°, ${pos[0].toFixed(2)}°\nETA ${flight.eta ? timeHM(flight.eta) : "—"}`}
+          </title>
+          <g transform={`rotate(${heading})`}>
+            <circle r={10} className="fill-surface stroke-accent" strokeWidth={1.5} />
+            <path d="M 6.5 0 L -4.5 -4.5 L -2 0 L -4.5 4.5 Z" className="fill-accent" />
+          </g>
+          <g transform={`translate(${left ? lx - LABEL_W : lx} ${ly + 4})`}>
+            <rect x={-3} y={-10} width={LABEL_W} height={14} rx={4} className="fill-surface/95 stroke-line" />
+            <text x={2} y={0} className="fill-accent-ink text-[10px] font-semibold">
+              {flight.flight_number} · {countdown(flight.eta, now)}
+            </text>
+          </g>
+        </g>
+      </Marker>
+    </g>
+  );
 }
 
 export function NetworkMap({ stations, flights, ulds, station, timeScale, onStation }: Props) {
   const now = useNow(1000);
+  const world = useWorld();
+  const [view, setView] = useState(HOME);
+  const [liveZoom, setLiveZoom] = useState(HOME.zoom); // updates during gestures
   const byIata = useMemo(() => Object.fromEntries(stations.map((s) => [s.iata, s])), [stations]);
   const airborne = flights.filter((f) => f.status === "DEPARTED");
   const routes = useMemo(() => {
@@ -71,84 +132,142 @@ export function NetworkMap({ stations, flights, ulds, station, timeScale, onStat
     for (const u of ulds) if (u.station) m[u.station] = (m[u.station] ?? 0) + 1;
     return m;
   }, [ulds]);
-  const hub = byIata.CGK;
+
+  const s = 1 / liveZoom;
+  const zoomTo = (zoom: number) => {
+    const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+    setView((v) => ({ ...v, zoom: z }));
+    setLiveZoom(z);
+  };
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1fr_400px]">
-      <Panel title="Flight network" subtitle={`Live flights and ULDs in the air · network clock ×${timeScale}`} icon={Globe2}>
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          className="w-full rounded-lg border border-line bg-gradient-to-b from-sky-50/70 to-blue-50/40 dark:from-slate-900 dark:to-slate-950"
-          role="img"
-          aria-label="Network map"
-        >
-          {/* radar-style grid: graticule + range rings around the hub */}
-          {Array.from({ length: 6 }, (_, i) => 100 + i * 10).map((lon) => (
-            <line key={`lon${lon}`} x1={px(lon)} x2={px(lon)} y1={0} y2={H} className="stroke-sky-200/70 dark:stroke-slate-800" />
-          ))}
-          {Array.from({ length: 9 }, (_, i) => -40 + i * 10).map((lat) => (
-            <g key={`lat${lat}`}>
-              <line x1={0} x2={W} y1={py(lat)} y2={py(lat)} className={lat === 0 ? "stroke-sky-300 dark:stroke-slate-700" : "stroke-sky-200/70 dark:stroke-slate-800"} />
-              <text x={4} y={py(lat) - 3} className="fill-sky-700/50 text-[9px] dark:fill-slate-600">
-                {lat === 0 ? "EQ" : `${Math.abs(lat)}°${lat > 0 ? "N" : "S"}`}
-              </text>
-            </g>
-          ))}
-          {hub &&
-            [80, 170, 270, 380].map((r) => (
-              <circle key={r} cx={px(hub.lon)} cy={py(hub.lat)} r={r} className="fill-none stroke-sky-200/80 dark:stroke-sky-500/15" strokeDasharray="2 6" />
-            ))}
+      <Panel title="Flight network" subtitle={`Live flights and ULDs in the air · network clock ×${timeScale} · scroll or pinch to zoom, drag to pan`} icon={Globe2}>
+        <div className="relative overflow-hidden rounded-lg border border-line bg-slate-200/80 dark:bg-slate-950">
+          <ComposableMap
+            projection="geoMercator"
+            projectionConfig={PROJECTION}
+            width={MAP_W}
+            height={MAP_H}
+            className="block h-auto w-full touch-none select-none"
+            role="img"
+            aria-label="Flight network map"
+          >
+            <ZoomableGroup
+              center={view.center}
+              zoom={view.zoom}
+              minZoom={MIN_ZOOM}
+              maxZoom={MAX_ZOOM}
+              translateExtent={[
+                [-MAP_W * 0.5, -MAP_H * 0.5],
+                [MAP_W * 1.5, MAP_H * 1.5],
+              ]}
+              onMove={({ zoom }) => zoom && setLiveZoom(zoom)}
+              onMoveEnd={({ coordinates, zoom }) => {
+                if (coordinates && zoom) setView({ center: coordinates, zoom });
+              }}
+            >
+              <Graticule step={[10, 10]} fill="none" className="stroke-slate-300/70 dark:stroke-slate-800" strokeWidth={0.6 * s} />
+              {world && (
+                <Geographies geography={world}>
+                  {({ geographies }) =>
+                    geographies.map((geo) => (
+                      <Geography
+                        key={geo.rsmKey}
+                        geography={geo}
+                        style={GEO_STYLE}
+                        className="fill-white stroke-slate-300 dark:fill-slate-800 dark:stroke-slate-700"
+                        strokeWidth={0.5 * s}
+                      />
+                    ))
+                  }
+                </Geographies>
+              )}
 
-          {routes.map((f) => {
-            const a = byIata[f.origin], b = byIata[f.destination];
-            if (!a || !b) return null;
-            return <path key={`r${f.id}`} d={arc(a, b).d} fill="none" className="stroke-slate-300 dark:stroke-slate-700" strokeDasharray="4 5" />;
-          })}
+              {/* Scheduled routes as great-circle arcs. */}
+              {routes.map((f) => {
+                const a = byIata[f.origin], b = byIata[f.destination];
+                if (!a || !b) return null;
+                return (
+                  <Line
+                    key={`r${f.id}`}
+                    from={lonLat(a)}
+                    to={lonLat(b)}
+                    fill="none"
+                    className="stroke-slate-400/80 dark:stroke-slate-600"
+                    strokeWidth={1.2 * s}
+                    strokeDasharray={`${4 * s} ${5 * s}`}
+                  />
+                );
+              })}
 
-          {airborne.map((f, i) => {
-            const a = byIata[f.origin], b = byIata[f.destination];
-            if (!a || !b) return null;
-            const g = arc(a, b);
-            const t = progress(f.departed_at, f.eta, now);
-            const p = g.at(t);
-            return (
-              <g key={`f${f.id}`}>
-                <path d={g.d} fill="none" className="stroke-blue-300/70 dark:stroke-blue-400/25" strokeWidth={1.5} strokeDasharray="5 4" />
-                <path d={g.flown(t)} fill="none" className="stroke-accent" strokeWidth={2.5} strokeLinecap="round" />
-                <g transform={`translate(${p.x} ${p.y}) rotate(${g.heading(t)})`}>
-                  <circle r={9} className="fill-surface stroke-accent" strokeWidth={1.5} />
-                  <path d="M 6 0 L -4 -4 L -2 0 L -4 4 Z" className="fill-accent" />
-                </g>
-                {/* staggered so simultaneous departures don't overprint */}
-                <g transform={`translate(${p.x + 13} ${p.y - 10 - (i % 3) * 16})`}>
-                  <rect x={-3} y={-10} width={92} height={14} rx={4} className="fill-surface/90 stroke-line" />
-                  <text x={2} y={0} className="fill-accent-ink text-[10px] font-semibold">
-                    {f.flight_number} · {countdown(f.eta, now)}
-                  </text>
-                </g>
-              </g>
-            );
-          })}
+              {airborne.map((f, i) => {
+                const a = byIata[f.origin], b = byIata[f.destination];
+                if (!a || !b) return null;
+                return (
+                  <FlightOnMap
+                    key={`f${f.id}`}
+                    flight={f}
+                    from={lonLat(a)}
+                    to={lonLat(b)}
+                    t={progress(f.departed_at, f.eta, now)}
+                    now={now}
+                    scale={s}
+                    stagger={i % 3}
+                  />
+                );
+              })}
 
-          {stations.map((s) => {
-            const active = s.iata === station;
-            const flip = px(s.lon) > W - 70; // keep labels inside the frame
-            const lx = flip ? px(s.lon) - 13 : px(s.lon) + 13;
-            const anchor = flip ? "end" : "start";
-            return (
-              <g key={s.iata} onClick={() => onStation(s.iata)} className="cursor-pointer" role="button" aria-label={`Select ${s.iata}`}>
-                {active && <circle cx={px(s.lon)} cy={py(s.lat)} r={16} className="fill-accent/10 stroke-accent/40" />}
-                <circle cx={px(s.lon)} cy={py(s.lat)} r={active ? 7 : 5.5} className={active ? "fill-accent" : "fill-slate-500 dark:fill-slate-400"} strokeWidth={2} stroke="white" />
-                <text x={lx} y={py(s.lat) + 4} textAnchor={anchor} className={`text-[12px] font-bold ${active ? "fill-accent-ink" : "fill-ink"}`}>
-                  {s.iata}
-                </text>
-                <text x={lx} y={py(s.lat) + 16} textAnchor={anchor} className="fill-muted text-[9px]">
-                  {atStation[s.iata] ?? 0} ULDs
-                </text>
-              </g>
-            );
-          })}
-        </svg>
+              {stations.map((st) => {
+                const active = st.iata === station;
+                const [lon] = lonLat(st);
+                const flip = lon > 145; // eastern airports: label on the left, toward the map
+                const lx = flip ? -13 : 13;
+                const anchor = flip ? "end" : "start";
+                return (
+                  <Marker key={st.iata} coordinates={lonLat(st)} onClick={() => onStation(st.iata)} className="cursor-pointer" aria-label={`Select ${st.iata}`}>
+                    <g transform={`scale(${s})`}>
+                      <title>{`${st.name} (${st.iata}) · ${atStation[st.iata] ?? 0} ULDs`}</title>
+                      {active && <circle r={16} className="fill-accent/10 stroke-accent/40" />}
+                      <circle r={active ? 7 : 5.5} className={active ? "fill-accent" : "fill-slate-500 dark:fill-slate-400"} strokeWidth={2} stroke="white" />
+                      <text x={lx} y={4} textAnchor={anchor} className={`text-[12px] font-bold ${active ? "fill-accent-ink" : "fill-ink"}`} paintOrder="stroke" strokeWidth={3} strokeLinejoin="round" stroke="var(--surface)">
+                        {st.iata}
+                      </text>
+                      <text x={lx} y={16} textAnchor={anchor} className="fill-muted text-[9px]" paintOrder="stroke" strokeWidth={3} strokeLinejoin="round" stroke="var(--surface)">
+                        {atStation[st.iata] ?? 0} ULDs
+                      </text>
+                    </g>
+                  </Marker>
+                );
+              })}
+            </ZoomableGroup>
+          </ComposableMap>
+
+          {!world && (
+            <div className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-muted">Loading map…</div>
+          )}
+
+          <div className="absolute right-2 top-2 flex flex-col overflow-hidden rounded-lg border border-line bg-surface/95 shadow-sm">
+            <button type="button" onClick={() => zoomTo(view.zoom * 1.6)} className="grid h-8 w-8 place-items-center text-ink-2 hover:bg-surface-2 hover:text-ink" aria-label="Zoom in">
+              <Plus size={15} />
+            </button>
+            <button type="button" onClick={() => zoomTo(view.zoom / 1.6)} className="grid h-8 w-8 place-items-center border-t border-line text-ink-2 hover:bg-surface-2 hover:text-ink" aria-label="Zoom out">
+              <Minus size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setView(HOME);
+                setLiveZoom(HOME.zoom);
+              }}
+              className="grid h-8 w-8 place-items-center border-t border-line text-ink-2 hover:bg-surface-2 hover:text-ink"
+              aria-label="Reset view"
+            >
+              <RotateCcw size={14} />
+            </button>
+          </div>
+          <div className="pointer-events-none absolute bottom-1 right-2 text-[9px] text-muted/80">Natural Earth</div>
+        </div>
       </Panel>
 
       <Panel title="In flight" subtitle={`${inFlight.length} ULDs airborne on ${airborne.length} flights`} icon={Plane}>

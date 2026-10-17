@@ -9,13 +9,16 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "d3-geo": "^3.1.1",
     "jose": "^6.2.12",
     "lucide-react": "^1.58.0",
     "next": "16.4.1",
     "next-auth": "^5.0.0-beta.32",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "server-only": "^0.0.1"
+    "react-simple-maps": "^5.0.5",
+    "server-only": "^0.0.1",
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
