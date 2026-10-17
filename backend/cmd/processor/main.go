@@ -104,7 +104,9 @@ func main() {
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		if err := httpx.Serve(ctx, log, srv); err != nil {
-			log.Error("metrics server", "err", err)
+			// Fail fast rather than run without health checks.
+			log.Error("metrics server failed; shutting down", "err", err)
+			stop()
 		}
 	}()
 

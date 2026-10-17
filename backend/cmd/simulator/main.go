@@ -79,7 +79,10 @@ func main() {
 		srv := &http.Server{Addr: config.String("SIM_CONTROL_ADDR", ":8090"), Handler: controlAPI(st, queue, runID),
 			ReadHeaderTimeout: 5 * time.Second}
 		if err := httpx.Serve(ctx, log, srv); err != nil {
-			log.Error("control api", "err", err)
+			// Fail fast: a second simulator that can't bind its control port
+			// would otherwise keep generating conflicting scans unnoticed.
+			log.Error("control api failed; shutting down", "err", err)
+			stop()
 		}
 	}()
 

@@ -23,11 +23,24 @@ import (
 	"github.com/radithya/uld-engine/migrations"
 )
 
-// Probes used to detect v1 migrations applied without tracking.
-var baselineProbes = map[string]string{
-	"001_schema.sql":   `SELECT to_regclass('public.ulds') IS NOT NULL`,
-	"002_seed.sql":     `SELECT to_regclass('public.aircrafts') IS NOT NULL AND EXISTS (SELECT 1 FROM aircrafts)`,
-	"003_security.sql": `SELECT to_regclass('public.airports') IS NOT NULL`,
+// Probes used to detect v1 migrations applied without tracking: the table
+// must exist and, if a query is given, it must return true. The table check
+// runs first because Postgres resolves relations at parse time, so a query
+// against a missing table errors instead of short-circuiting.
+var baselineProbes = map[string]struct{ table, query string }{
+	"001_schema.sql":   {table: "ulds"},
+	"002_seed.sql":     {table: "aircrafts", query: `SELECT EXISTS (SELECT 1 FROM aircrafts)`},
+	"003_security.sql": {table: "airports"},
+}
+
+func probe(ctx context.Context, conn *pgx.Conn, table, query string) (bool, error) {
+	var exists bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil || !exists || query == "" {
+		return exists, err
+	}
+	var ok bool
+	err := conn.QueryRow(ctx, query).Scan(&ok)
+	return ok, err
 }
 
 func main() {
@@ -64,12 +77,12 @@ func main() {
 
 	if !tracked {
 		for _, f := range files {
-			probe, ok := baselineProbes[f]
+			p, ok := baselineProbes[f]
 			if !ok {
 				continue
 			}
-			var present bool
-			if err := conn.QueryRow(ctx, probe).Scan(&present); err != nil {
+			present, err := probe(ctx, conn, p.table, p.query)
+			if err != nil {
 				logx.Fatal(log, "baseline probe "+f, err)
 			}
 			if present {
