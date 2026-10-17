@@ -46,7 +46,7 @@ export default function SignInPage() {
 
   return (
     <main className="relative min-h-screen bg-canvas">
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-gradient-to-b from-indigo-50 to-transparent dark:from-indigo-500/10" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-gradient-to-b from-blue-50 to-transparent dark:from-blue-500/10" />
       <div className="relative mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
         <Logo />
         <ThemeToggle />

@@ -9,7 +9,7 @@ export const FLIGHT_STATUS_CHIP: Record<string, string> = {
   CANCELLED: "bg-surface-2 text-muted ring-line",
 };
 
-/** Payload utilisation: indigo, amber from 90%, rose when over max payload. */
+/** Payload utilisation: brand blue, amber from 90%, rose when over max payload. */
 export function payloadBar(f: FlightLoad) {
   const pct = (f.total_weight_kg / f.max_payload_kg) * 100;
   return { pct, cls: f.over_payload ? "bg-rose-500" : pct >= 90 ? "bg-amber-500" : "bg-accent" };

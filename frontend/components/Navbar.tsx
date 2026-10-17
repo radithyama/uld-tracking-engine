@@ -121,7 +121,7 @@ export function Navbar({ stations, station, onStation, tabs, tab, onTab, role, n
         </button>
         <Logo />
 
-        <nav className="ml-4 hidden items-center gap-0.5 lg:flex" aria-label="Views">
+        <nav className="ml-4 hidden items-center gap-0.5 xl:flex" aria-label="Views">
           {VIEW_ORDER.filter((t) => tabs.includes(t)).map((t) => {
             const V = VIEWS[t];
             const active = tab === t;
@@ -131,7 +131,7 @@ export function Navbar({ stations, station, onStation, tabs, tab, onTab, role, n
                 type="button"
                 onClick={() => onTab(t)}
                 aria-current={active ? "page" : undefined}
-                className={`relative inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                className={`relative inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition ${
                   active ? "bg-accent-soft text-accent-ink" : "text-muted hover:bg-surface-2 hover:text-ink"
                 }`}
               >
@@ -148,7 +148,7 @@ export function Navbar({ stations, station, onStation, tabs, tab, onTab, role, n
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
           <label className="hidden items-center gap-2 md:flex">
             <span className="sr-only">Hub</span>
-            <select value={station} onChange={(e) => onStation(e.target.value)} className="field h-9 max-w-52 truncate font-mono text-sm font-medium xl:max-w-none" aria-label="Hub">
+            <select value={station} onChange={(e) => onStation(e.target.value)} className="field h-9 max-w-52 truncate font-mono text-sm font-medium 2xl:max-w-none" aria-label="Hub">
               {stations.map((s) => (
                 <option key={s.iata} value={s.iata}>
                   {s.iata} · {s.name.replace(/ International$/, "")}
@@ -161,7 +161,7 @@ export function Navbar({ stations, station, onStation, tabs, tab, onTab, role, n
           </span>
           <button type="button" onClick={onGuide} className="btn-ghost h-9 !px-2.5" aria-label="How it works">
             <BookOpen size={16} />
-            <span className="hidden xl:inline">Guide</span>
+            <span className="hidden 2xl:inline">Guide</span>
           </button>
           <a
             href={REPO_URL}
@@ -177,12 +177,12 @@ export function Navbar({ stations, station, onStation, tabs, tab, onTab, role, n
           <button
             type="button"
             onClick={onMenu}
-            className="hidden items-center gap-2 rounded-lg p-1 transition hover:bg-surface-2 sm:flex xl:pr-2"
+            className="hidden items-center gap-2 rounded-lg p-1 transition hover:bg-surface-2 sm:flex 2xl:pr-2"
             aria-label={`Account and persona · ${ROLE_INFO[role].label}`}
             title={ROLE_INFO[role].label}
           >
             <span className="grid h-7 w-7 place-items-center rounded-full bg-surface-2 text-[11px] font-semibold text-ink-2 ring-1 ring-line">{initials}</span>
-            <span className={`hidden whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset xl:inline ${ROLE_CHIP[role]}`}>{ROLE_INFO[role].label}</span>
+            <span className={`hidden whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset 2xl:inline ${ROLE_CHIP[role]}`}>{ROLE_INFO[role].label}</span>
           </button>
         </div>
       </div>

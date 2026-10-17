@@ -78,7 +78,7 @@ export function NetworkMap({ stations, flights, ulds, station, timeScale, onStat
       <Panel title="Flight network" subtitle={`Live flights and ULDs in the air · network clock ×${timeScale}`} icon={Globe2}>
         <svg
           viewBox={`0 0 ${W} ${H}`}
-          className="w-full rounded-lg border border-line bg-gradient-to-b from-sky-50/70 to-indigo-50/40 dark:from-slate-900 dark:to-slate-950"
+          className="w-full rounded-lg border border-line bg-gradient-to-b from-sky-50/70 to-blue-50/40 dark:from-slate-900 dark:to-slate-950"
           role="img"
           aria-label="Network map"
         >
@@ -96,7 +96,7 @@ export function NetworkMap({ stations, flights, ulds, station, timeScale, onStat
           ))}
           {hub &&
             [80, 170, 270, 380].map((r) => (
-              <circle key={r} cx={px(hub.lon)} cy={py(hub.lat)} r={r} className="fill-none stroke-indigo-200/70 dark:stroke-indigo-500/15" strokeDasharray="2 6" />
+              <circle key={r} cx={px(hub.lon)} cy={py(hub.lat)} r={r} className="fill-none stroke-sky-200/80 dark:stroke-sky-500/15" strokeDasharray="2 6" />
             ))}
 
           {routes.map((f) => {
@@ -113,7 +113,7 @@ export function NetworkMap({ stations, flights, ulds, station, timeScale, onStat
             const p = g.at(t);
             return (
               <g key={`f${f.id}`}>
-                <path d={g.d} fill="none" className="stroke-indigo-300/70 dark:stroke-indigo-500/30" strokeWidth={1.5} strokeDasharray="5 4" />
+                <path d={g.d} fill="none" className="stroke-blue-300/70 dark:stroke-blue-400/25" strokeWidth={1.5} strokeDasharray="5 4" />
                 <path d={g.flown(t)} fill="none" className="stroke-accent" strokeWidth={2.5} strokeLinecap="round" />
                 <g transform={`translate(${p.x} ${p.y}) rotate(${g.heading(t)})`}>
                   <circle r={9} className="fill-surface stroke-accent" strokeWidth={1.5} />
